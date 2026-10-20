@@ -12,6 +12,8 @@ app.get('/health', (req, res) => {
     });
 });
 
+app.use('/', require('./routes/parking.routes'));
+
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Parking Service ejecutándose en el puerto ${PORT}`);
 });
