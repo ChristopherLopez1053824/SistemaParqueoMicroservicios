@@ -1,5 +1,5 @@
 
-require('dotenv').config();
+require('dotenv').config({ path: require('path').join(__dirname, '../../.env') });
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
@@ -14,7 +14,8 @@ const pool = new Pool({
     ssl: {
         ca,
         rejectUnauthorized: true
-    }
+    },
+    connectionTimeoutMillis: 10000
 });
 
 module.exports = pool;
