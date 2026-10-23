@@ -1,12 +1,17 @@
 {
   "name": "reservation-service",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Reservation Service del Sistema Inteligente de Gestión de Parqueos",
+  "main": "src/server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --test \"test/*.test.js\"",
+    "test:watch": "node --test --watch \"test/*.test.js\"",
     "start": "node src/server.js",
-    "dev": "nodemon src/server.js"
+    "dev": "nodemon src/server.js",
+    "migrate": "node src/schema.js"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "keywords": [],
   "type": "commonjs",

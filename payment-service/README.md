@@ -175,11 +175,20 @@ interfaces HTTP.
 
 ## Variables de entorno
 
-Un solo archivo **`.env` en la raíz del repositorio** (ver
-[`.env.example`](../.env.example)); el servicio lo carga por ruta fija aunque
-se arranque desde cualquier carpeta. La variable más importante es
-`DATABASE_URL` (credencial de Supabase, nunca se sube al repositorio). No se
-define `PORT` ahí: cada servicio usa su puerto por defecto (este, 3003).
+El servicio carga primero `payment-service/.env` (si existe) y luego el
+**`.env` de la raíz** (ver [`.env.example`](../.env.example)) para completar
+variables; el archivo del servicio tiene prioridad. La variable más importante
+es `DATABASE_URL`
+(credencial de Supabase, nunca se sube al repositorio). Variables de
+integración:
+
+| Variable | Uso |
+| --- | --- |
+| `RESERVATION_SERVICE_URL` | URL interna de Reservation (por defecto `http://localhost:3002`; en Compose `http://reservation-service:3002`) |
+| `RESERVATION_SERVICE_TIMEOUT_MS` | Timeout de la consulta de sesión (por defecto `5000`) |
+| `INTERNAL_API_TOKEN` | Token exigido en `x-internal-token` (si se configura) y enviado a Reservation |
+| `QUOTE_TTL_MINUTES` | Vigencia de cotizaciones (por defecto `30`) |
+| `BODY_LIMIT` | Límite del cuerpo JSON (por defecto `100kb`) |
 
 ## Ejecución
 
@@ -221,6 +230,17 @@ curl -i -X POST http://localhost:3003/payments \
 
 Repetir el último comando con la misma `Idempotency-Key` debe devolver `200`
 con el mismo `paymentId`.
+
+## Pruebas
+
+```bash
+cd payment-service
+npm test
+```
+
+Las pruebas usan `node:test`, no requieren Supabase y cubren health,
+validaciones de cotización, pago e `Idempotency-Key`, formato uniforme de
+errores y cálculo de horas facturables.
 
 ## Limitaciones del prototipo
 

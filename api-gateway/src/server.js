@@ -1,46 +1,19 @@
-require('dotenv').config({ path: require('path').join(__dirname, '../../.env') });
-const express = require('express');
-const { createProxyMiddleware } = require('http-proxy-middleware');
+const config = require('./config');
+const { createApp } = require('./app');
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+const app = createApp(config);
 
-app.use(express.json());
-
-app.get('/health', (req, res) => {
-    res.json({
-        service: 'api-gateway',
-        status: 'ok'
-    });
+const server = app.listen(config.port, '0.0.0.0', () => {
+    console.log(`API Gateway ejecutándose en el puerto ${config.port}`);
+    console.log(`Parking: ${config.services.parking}`);
+    console.log(`Reservations: ${config.services.reservation}`);
+    console.log(`Payments: ${config.services.payment}`);
 });
 
-app.use(
-    '/api/parking',
-    createProxyMiddleware({
-        target: process.env.PARKING_SERVICE_URL || 'http://localhost:3001',
-        changeOrigin: true,
-        pathRewrite: { '^/api/parking': '' }
-    })
-);
+function shutdown(signal) {
+    console.log(`API Gateway recibió ${signal}. Cerrando...`);
+    server.close(() => process.exit(0));
+}
 
-app.use(
-    '/api/reservations',
-    createProxyMiddleware({
-        target: process.env.RESERVATION_SERVICE_URL || 'http://localhost:3002',
-        changeOrigin: true,
-        pathRewrite: { '^/api/reservations': '' }
-    })
-);
-
-app.use(
-    '/api/payments',
-    createProxyMiddleware({
-        target: process.env.PAYMENT_SERVICE_URL || 'http://localhost:3003',
-        changeOrigin: true,
-        pathRewrite: { '^/api/payments': '' }
-    })
-);
-
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`API Gateway ejecutándose en el puerto ${PORT}`);
-});
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));

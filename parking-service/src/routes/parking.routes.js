@@ -1,28 +1,18 @@
-
 const express = require('express');
-const pool = require('../db');
+const { randomUUID } = require('crypto');
+const controller = require('../controllers/parking.controller');
 
 const router = express.Router();
 
-router.get('/spaces', async (req, res) => {
-    try {
-        const result = await pool.query(`
-            SELECT id, code, level, space_type, status
-            FROM parking.parking_spaces
-            ORDER BY code
-        `);
+router.get('/spaces', controller.listSpaces);
+router.get('/spaces/:id', controller.getSpace);
+router.post('/spaces', controller.createSpace);
+router.patch('/spaces/:id/status', controller.updateSpaceStatus);
 
-        res.json({
-            total: result.rowCount,
-            spaces: result.rows
-        });
-    } catch (error) {
-        console.error('Error al consultar las plazas:', error.message);
-
-        res.status(500).json({
-            error: 'No se pudieron consultar las plazas de estacionamiento'
-        });
-    }
-});
+router.post('/spaces/:id/reserve', controller.reserveSpace);
+router.post('/spaces/:id/occupy', controller.occupySpace);
+router.post('/spaces/:id/release', controller.releaseSpace);
+router.post('/spaces/:id/checkout', controller.checkoutSpace);
+router.post('/spaces/:id/restore', controller.restoreSpace);
 
 module.exports = router;
