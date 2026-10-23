@@ -101,7 +101,36 @@ Gateway:
 | PATCH | `/spaces/:id/status` | `/api/parking/spaces/:id/status` | Actualizar estado |
 | GET | `/health` | `/health` | Estado del servicio |
 
-El Gateway ya reescribe `^/api/parking` a la ruta interna correspondiente.
+El Gateway elimina el prefijo `/api/parking` antes de reenviar la solicitud, de
+modo que el servicio recibe la ruta interna (`/spaces`, `/spaces/:id`, etc.).
+
+### Rutas internas de coordinación con Reservation Service
+
+Estas rutas no forman parte de la API pública del frontend. El Gateway también
+las enruta, pero requieren el token interno cuando `INTERNAL_API_TOKEN` está
+configurado.
+
+| Método | Ruta | Transición | `reservationId` |
+| --- | --- | --- | --- |
+| POST | `/spaces/:id/reserve` | `available → reserved` | Obligatorio (UUID v4) |
+| POST | `/spaces/:id/occupy` | `reserved → occupied` | Obligatorio y dueño de la plaza |
+| POST | `/spaces/:id/release` | `reserved → available` | Obligatorio y dueño de la plaza |
+| POST | `/spaces/:id/checkout` | `occupied → available` | Obligatorio y dueño de la plaza |
+| POST | `/spaces/:id/restore` | `occupied → reserved` | Obligatorio y dueño de la plaza |
+
+Cuerpo:
+
+```json
+{
+  "reservationId": "4f6f1f34-73f5-4ea8-8f10-56f4c24b2d17"
+}
+```
+
+Las operaciones usan un `UPDATE` condicional por estado y dueño, por lo que son
+atómicas. Repetir una operación ya aplicada para la misma reserva es
+idempotente; intentar operar una plaza de otra reserva devuelve
+`409 RESERVATION_CONFLICT`. `GET /spaces/:id` y estas rutas incluyen
+`reservedByReservationId`.
 
 ### GET `/spaces`
 
@@ -255,11 +284,14 @@ La tabla existente se reutiliza sin cambios:
 | `level` | VARCHAR | `NOT NULL` |
 | `space_type` | VARCHAR | `NOT NULL`, CHECK en `standard`, `accessible`, `electric` |
 | `status` | VARCHAR | `NOT NULL`, CHECK en `available`, `reserved`, `occupied`, `maintenance` |
+| `reserved_by_reservation_id` | UUID | Reserva dueña del estado `reserved`/`occupied` |
 | `created_at` | TIMESTAMPTZ | `NOT NULL`, `DEFAULT now()` |
 | `updated_at` | TIMESTAMPTZ | `NOT NULL`, `DEFAULT now()` |
 
-El mapeo a JSON es `space_type → spaceType`, `created_at → createdAt` y
-`updated_at → updatedAt`. No se requieren migraciones.
+El mapeo a JSON es `space_type → spaceType`, `created_at → createdAt`,
+`updated_at → updatedAt` y
+`reserved_by_reservation_id → reservedByReservationId`. La columna nueva la
+agrega de forma idempotente `migrations/001_reservation_coordination.sql`.
 
 ## Pruebas
 
@@ -285,23 +317,29 @@ Las pruebas usan `node:test`, levantan la app en un puerto efímero y sustituyen
 12. Errores de base de datos sin filtrar información sensible.
 13. Formato JSON y campos camelCase compatibles con el contrato.
 14. JSON mal formado y errores de conexión (`503`).
+15. Rutas de coordinación `reserve`, `occupy`, `release`, `checkout` y
+    `restore`, incluida la idempotencia y el rechazo de plazas de otra reserva.
 
 ## Integración con Reservation Service
 
 Reservation Service es el propietario del esquema `reservations`; Parking
 Service no consulta ni modifica esas tablas. La coordinación se realiza por
-HTTP:
+HTTP usando las rutas internas `reserve`, `occupy`, `release`, `checkout` y
+`restore`:
 
-1. Reservation Service consulta la plaza con `GET /spaces/:id` o usa
-   `PATCH /spaces/:id/status` para intentar la transición.
-2. Un `409 SPACE_NOT_AVAILABLE` o `409 INVALID_STATE_TRANSITION` indica que la
-   plaza ya no admite la operación.
-3. Si una reserva se cancela o una sesión termina, Reservation Service solicita
-   el cambio a `available`.
+1. Reservation Service consulta la plaza con `GET /spaces/:id`.
+2. Para reservar, enviar una entrada o liberar la plaza, llama a la ruta de
+   transición correspondiente con `{ "reservationId": "..." }`.
+3. Un `409 SPACE_NOT_AVAILABLE`, `409 RESERVATION_CONFLICT` o
+   `409 INVALID_STATE_TRANSITION` indica que la plaza ya no admite la
+   operación.
+4. Si una reserva se cancela o una sesión termina, Reservation Service solicita
+   la liberación de la plaza.
 
-Los reintentos deben ser seguros: si una llamada HTTP falla, Reservation
-Service debe volver a consultar el estado de la plaza antes de repetir la
-operación.
+Los reintentos son seguros: las transiciones ya aplicadas para la misma
+reserva devuelven la plaza actual sin repetir el cambio. Si una llamada HTTP
+falla de forma incierta, Reservation Service vuelve a consultar el estado antes
+de reintentar.
 
 ## Limitaciones conocidas
 
@@ -311,5 +349,5 @@ operación.
   la plaza.
 - Los tres microservicios comparten la misma credencial PostgreSQL del
   prototipo; el aislamiento por esquema es lógico, no de permisos.
-- No se incluye Dockerfile ni configuración de Podman Compose en esta carpeta;
-  la infraestructura compartida se gestiona en la raíz del repositorio.
+- El `Dockerfile` y la configuración de Podman Compose viven en esta carpeta y
+  en la raíz del repositorio, respectivamente.

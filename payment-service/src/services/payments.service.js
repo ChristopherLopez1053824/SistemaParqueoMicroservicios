@@ -1,6 +1,6 @@
 const { randomUUID } = require('crypto');
 const pool = require('../db');
-const { query } = require('../lib/query');
+const { query, isUnavailable } = require('../lib/query');
 const { AppError, CODES } = require('../lib/errors');
 
 const DEFAULT_QUOTE_TTL_MINUTES = 30;
@@ -162,6 +162,13 @@ async function registerPayment({ sessionId, quoteId, idempotencyKey }) {
             throw new AppError(409, CODES.PAYMENT_ALREADY_PROCESSED, 'La sesión indicada ya tiene un pago registrado.');
         } else {
             console.error(`DATABASE_ERROR: ${error.message}`);
+            if (isUnavailable(error)) {
+                throw new AppError(
+                    503,
+                    CODES.SERVICE_UNAVAILABLE,
+                    'El servicio de base de datos no está disponible temporalmente.'
+                );
+            }
             throw new AppError(500, CODES.DATABASE_ERROR, 'Error interno de base de datos.');
         }
     }

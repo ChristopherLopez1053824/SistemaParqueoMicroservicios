@@ -9,6 +9,7 @@ RUN npm ci --omit=dev
 
 COPY src ./src
 COPY certs ./certs
+COPY migrations ./migrations
 
 USER node
 

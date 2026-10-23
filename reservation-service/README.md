@@ -572,14 +572,16 @@ El Gateway enruta `/api/reservations` hacia Reservation Service. Se verificó lo
 
 | Ruta pública | Ruta recibida por Reservation Service |
 |---|---|
-| `/api/reservations` | `/` |
-| `/api/reservations/:id` | `/:id` |
-| `/api/reservations/:id/cancel` | `/:id/cancel` |
+| `/api/reservations` | `/reservations` |
+| `/api/reservations/:id` | `/reservations/:id` |
+| `/api/reservations/:id/cancel` | `/reservations/:id/cancel` |
 | `/api/reservations/sessions/:reservationId/entry` | `/sessions/:reservationId/entry` |
 | `/api/reservations/sessions/:sessionId/exit` | `/sessions/:sessionId/exit` |
 | `/api/reservations/sessions/:sessionId` | `/sessions/:sessionId` |
 
-Las rutas públicas de sesiones incluyen el segmento `sessions`, y las rutas internas comienzan por `/sessions`, por lo que la traducción es directa.
+Las rutas públicas de reservas se reescriben al prefijo interno `/reservations`.
+Las rutas públicas de sesiones incluyen el segmento `sessions`, y las rutas
+internas comienzan por `/sessions`, por lo que la traducción es directa.
 
 Para llamadas internas entre servicios, el Gateway inyecta `x-internal-token` desde `INTERNAL_API_TOKEN` y elimina cualquier token recibido del cliente. Reservation Service envía el mismo token a Parking Service.
 

@@ -7,8 +7,8 @@ function toIso(value) {
     return value ? new Date(value).toISOString() : null;
 }
 
-function toSpaceJson(row) {
-    return {
+function toSpaceJson(row, { includeReservation = false } = {}) {
+    const space = {
         id: row.id,
         code: row.code,
         level: row.level,
@@ -17,6 +17,43 @@ function toSpaceJson(row) {
         createdAt: toIso(row.created_at),
         updatedAt: toIso(row.updated_at)
     };
+
+    if (includeReservation) {
+        space.reservedByReservationId = row.reserved_by_reservation_id || null;
+    }
+
+    return space;
+}
+
+function reservationIdFrom(body) {
+    const reservationId = isPlainObject(body) ? body.reservationId : undefined;
+
+    if (!isUuid(reservationId)) {
+        throw new AppError(
+            400,
+            CODES.VALIDATION_ERROR,
+            'Los datos enviados no son válidos.',
+            [{
+                field: 'reservationId',
+                message: 'El identificador de la reserva es obligatorio y debe ser un UUID v4 válido.'
+            }]
+        );
+    }
+
+    return reservationId;
+}
+
+async function runTransition(req, res, transition) {
+    const { id } = req.params;
+
+    if (!isUuid(id)) {
+        throw new AppError(400, CODES.INVALID_ID, 'El identificador de la plaza no es un UUID v4 válido.');
+    }
+
+    const reservationId = reservationIdFrom(req.body);
+    const space = await transition(id, reservationId);
+
+    res.status(200).json({ data: toSpaceJson(space, { includeReservation: true }) });
 }
 
 async function listSpaces(req, res) {
@@ -40,7 +77,7 @@ async function getSpace(req, res) {
         throw new AppError(404, CODES.RESOURCE_NOT_FOUND, 'La plaza indicada no existe.');
     }
 
-    res.status(200).json({ data: toSpaceJson(space) });
+    res.status(200).json({ data: toSpaceJson(space, { includeReservation: true }) });
 }
 
 async function createSpace(req, res) {
@@ -88,12 +125,37 @@ async function updateSpaceStatus(req, res) {
     }
 
     const space = await spaces.updateSpaceStatus(id, status);
-    res.status(200).json({ data: toSpaceJson(space) });
+    res.status(200).json({ data: toSpaceJson(space, { includeReservation: true }) });
+}
+
+async function reserveSpace(req, res) {
+    await runTransition(req, res, spaces.reserveSpace);
+}
+
+async function occupySpace(req, res) {
+    await runTransition(req, res, spaces.occupySpace);
+}
+
+async function releaseSpace(req, res) {
+    await runTransition(req, res, spaces.releaseSpace);
+}
+
+async function checkoutSpace(req, res) {
+    await runTransition(req, res, spaces.checkoutSpace);
+}
+
+async function restoreSpace(req, res) {
+    await runTransition(req, res, spaces.restoreSpace);
 }
 
 module.exports = {
     listSpaces,
     getSpace,
     createSpace,
-    updateSpaceStatus
+    updateSpaceStatus,
+    reserveSpace,
+    occupySpace,
+    releaseSpace,
+    checkoutSpace,
+    restoreSpace
 };

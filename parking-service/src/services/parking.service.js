@@ -2,7 +2,7 @@ const { query } = require('../lib/query');
 const { AppError, CODES } = require('../lib/errors');
 const { ALLOWED_TRANSITIONS } = require('../lib/constants');
 
-const SPACE_COLUMNS = 'id, code, level, space_type, status, created_at, updated_at';
+const SPACE_COLUMNS = 'id, code, level, space_type, status, reserved_by_reservation_id, created_at, updated_at';
 
 function sourceStatusesFor(nextStatus) {
     return Object.entries(ALLOWED_TRANSITIONS)
@@ -120,7 +120,12 @@ async function updateSpaceStatus(id, nextStatus) {
 
     const result = await query(
         `UPDATE parking.parking_spaces
-         SET status = $2, updated_at = now()
+         SET status = $2,
+             reserved_by_reservation_id = CASE
+                 WHEN $2 IN ('available', 'maintenance', 'reserved') THEN NULL
+                 ELSE reserved_by_reservation_id
+             END,
+             updated_at = now()
          WHERE id = $1 AND status = ANY($3::text[])
          RETURNING ${SPACE_COLUMNS}`,
         [id, nextStatus, allowedSources]
@@ -136,9 +141,168 @@ async function updateSpaceStatus(id, nextStatus) {
     throw transitionError(current.status, nextStatus);
 }
 
+function ownershipConflict(message) {
+    return new AppError(
+        409,
+        CODES.RESERVATION_CONFLICT,
+        message,
+        [{ field: 'reservationId', message: 'La plaza está asignada a otra reserva.' }]
+    );
+}
+
+function stateConflict(message) {
+    return new AppError(
+        409,
+        CODES.INVALID_STATE_TRANSITION,
+        message,
+        [{ field: 'status', message: 'La transición de estado solicitada no es válida.' }]
+    );
+}
+
+async function missingSpace(id) {
+    const current = await findSpaceById(id);
+    if (!current) {
+        throw new AppError(404, CODES.RESOURCE_NOT_FOUND, 'La plaza indicada no existe.');
+    }
+    return current;
+}
+
+async function reserveSpace(id, reservationId) {
+    const result = await query(
+        `UPDATE parking.parking_spaces
+         SET status = 'reserved', reserved_by_reservation_id = $2, updated_at = now()
+         WHERE id = $1 AND status = 'available'
+         RETURNING ${SPACE_COLUMNS}`,
+        [id, reservationId]
+    );
+
+    if (result.rows[0]) return result.rows[0];
+
+    const current = await missingSpace(id);
+
+    if (current.status === 'reserved' && current.reserved_by_reservation_id === reservationId) {
+        return current;
+    }
+
+    if (current.status === 'reserved') {
+        throw ownershipConflict('La plaza ya está reservada por otra reserva.');
+    }
+
+    throw new AppError(
+        409,
+        CODES.SPACE_NOT_AVAILABLE,
+        'La plaza no está disponible para reservarse.',
+        [{
+            field: 'status',
+            message: `La plaza se encuentra en estado "${current.status}".`
+        }]
+    );
+}
+
+async function occupySpace(id, reservationId) {
+    const result = await query(
+        `UPDATE parking.parking_spaces
+         SET status = 'occupied', updated_at = now()
+         WHERE id = $1 AND status = 'reserved' AND reserved_by_reservation_id = $2
+         RETURNING ${SPACE_COLUMNS}`,
+        [id, reservationId]
+    );
+
+    if (result.rows[0]) return result.rows[0];
+
+    const current = await missingSpace(id);
+
+    if (current.status === 'occupied' && current.reserved_by_reservation_id === reservationId) {
+        return current;
+    }
+
+    if (current.reserved_by_reservation_id && current.reserved_by_reservation_id !== reservationId) {
+        throw ownershipConflict('La plaza no pertenece a la reserva indicada.');
+    }
+
+    throw stateConflict('La plaza no puede pasar a ocupada desde su estado actual.');
+}
+
+async function releaseSpace(id, reservationId) {
+    const result = await query(
+        `UPDATE parking.parking_spaces
+         SET status = 'available', reserved_by_reservation_id = NULL, updated_at = now()
+         WHERE id = $1 AND status = 'reserved' AND reserved_by_reservation_id = $2
+         RETURNING ${SPACE_COLUMNS}`,
+        [id, reservationId]
+    );
+
+    if (result.rows[0]) return result.rows[0];
+
+    const current = await missingSpace(id);
+
+    if (current.status === 'available') {
+        return current;
+    }
+
+    if (current.status === 'reserved') {
+        throw ownershipConflict('La plaza está reservada por otra reserva.');
+    }
+
+    throw stateConflict('La plaza no puede liberarse desde su estado actual.');
+}
+
+async function checkoutSpace(id, reservationId) {
+    const result = await query(
+        `UPDATE parking.parking_spaces
+         SET status = 'available', reserved_by_reservation_id = NULL, updated_at = now()
+         WHERE id = $1 AND status = 'occupied' AND reserved_by_reservation_id = $2
+         RETURNING ${SPACE_COLUMNS}`,
+        [id, reservationId]
+    );
+
+    if (result.rows[0]) return result.rows[0];
+
+    const current = await missingSpace(id);
+
+    if (current.status === 'available') {
+        return current;
+    }
+
+    if (current.reserved_by_reservation_id && current.reserved_by_reservation_id !== reservationId) {
+        throw ownershipConflict('La plaza ocupada pertenece a otra reserva.');
+    }
+
+    throw stateConflict('La plaza no puede liberarse al registrar la salida desde su estado actual.');
+}
+
+async function restoreSpace(id, reservationId) {
+    const result = await query(
+        `UPDATE parking.parking_spaces
+         SET status = 'reserved', updated_at = now()
+         WHERE id = $1 AND status = 'occupied' AND reserved_by_reservation_id = $2
+         RETURNING ${SPACE_COLUMNS}`,
+        [id, reservationId]
+    );
+
+    if (result.rows[0]) return result.rows[0];
+
+    const current = await missingSpace(id);
+
+    if (current.status === 'reserved' && current.reserved_by_reservation_id === reservationId) {
+        return current;
+    }
+
+    if (current.reserved_by_reservation_id && current.reserved_by_reservation_id !== reservationId) {
+        throw ownershipConflict('La plaza pertenece a otra reserva.');
+    }
+
+    throw stateConflict('La plaza no puede volver al estado reservado desde su estado actual.');
+}
+
 module.exports = {
     listSpaces,
     findSpaceById,
     createSpace,
-    updateSpaceStatus
+    updateSpaceStatus,
+    reserveSpace,
+    occupySpace,
+    releaseSpace,
+    checkoutSpace,
+    restoreSpace
 };

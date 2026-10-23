@@ -6,7 +6,8 @@
   "scripts": {
     "test": "node --test test/*.test.js",
     "start": "node src/server.js",
-    "dev": "nodemon src/server.js"
+    "dev": "nodemon src/server.js",
+    "migrate": "node src/schema.js"
   },
   "keywords": [],
   "type": "commonjs",

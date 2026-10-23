@@ -15,8 +15,34 @@ function notFoundHandler(req, res, next) {
     ));
 }
 
+const UNAVAILABLE_ERROR_CODES = new Set([
+    'ECONNREFUSED',
+    'ECONNRESET',
+    'ENOTFOUND',
+    'EAI_AGAIN',
+    'ETIMEDOUT',
+    'EHOSTUNREACH',
+    'ENETUNREACH',
+    'EPIPE',
+    '08000',
+    '08001',
+    '08003',
+    '08004',
+    '08006',
+    '08P01',
+    '53300',
+    '53400',
+    '57P01',
+    '57P02',
+    '57P03'
+]);
+
 function isDatabaseError(error) {
     return Boolean(error && typeof error.code === 'string' && /^[0-9A-Z]{5}$/.test(error.code));
+}
+
+function isUnavailableError(error) {
+    return Boolean(error && UNAVAILABLE_ERROR_CODES.has(error.code));
 }
 
 function createErrorHandler(logger = console) {
@@ -49,6 +75,10 @@ function createErrorHandler(logger = console) {
             statusCode = 400;
             code = ERROR_CODES.VALIDATION_ERROR;
             message = 'El cuerpo de la solicitud es demasiado grande.';
+        } else if (isUnavailableError(error)) {
+            statusCode = 503;
+            code = ERROR_CODES.SERVICE_UNAVAILABLE;
+            message = 'La base de datos no está disponible en este momento.';
         } else if (isDatabaseError(error)) {
             statusCode = 500;
             code = ERROR_CODES.DATABASE_ERROR;

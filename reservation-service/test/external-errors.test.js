@@ -69,6 +69,18 @@ test('traduce un conflicto de Parking Service a 409', async (t) => {
     assert.equal(response.body.error.code, 'SPACE_NOT_AVAILABLE');
 });
 
+test('traduce indisponibilidad de PostgreSQL a 503', async (t) => {
+    const { server, repository } = await setup(t);
+    const error = new Error('connect ECONNREFUSED 127.0.0.1:5432');
+    error.code = 'ECONNREFUSED';
+    repository.failListReservations = error;
+
+    const response = await request(server, 'GET', '/reservations');
+
+    assert.equal(response.status, 503);
+    assert.equal(response.body.error.code, 'SERVICE_UNAVAILABLE');
+});
+
 test('mantiene la estructura uniforme y propaga requestId', async (t) => {
     const { server } = await setup(t);
 

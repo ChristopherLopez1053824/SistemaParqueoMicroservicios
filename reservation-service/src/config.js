@@ -1,4 +1,8 @@
-require('dotenv').config();
+const path = require('path');
+const dotenv = require('dotenv');
+
+dotenv.config({ path: path.join(__dirname, '../.env'), quiet: true });
+dotenv.config({ path: path.join(__dirname, '../../.env'), override: false, quiet: true });
 
 function toPositiveInt(value, fallback) {
     const parsed = Number.parseInt(value, 10);

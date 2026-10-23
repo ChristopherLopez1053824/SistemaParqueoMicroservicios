@@ -33,7 +33,7 @@ router.post('/quote', async (req, res) => {
         throw new AppError(400, CODES.VALIDATION_ERROR, 'Los datos enviados no son válidos.', errors);
     }
 
-    const session = await fetchSession(sessionId);
+    const session = await fetchSession(sessionId, req.requestId);
     if (!session) {
         throw new AppError(404, CODES.RESOURCE_NOT_FOUND, 'La sesión indicada no existe.');
     }

@@ -170,9 +170,14 @@ class FakeReservationRepository {
         this.failInsertReservation = false;
         this.failInsertSession = false;
         this.failCompleteSession = false;
+        this.failListReservations = null;
     }
 
     async listReservations() {
+        if (this.failListReservations) {
+            throw this.failListReservations;
+        }
+
         return [...this.reservations.values()]
             .sort((a, b) => b.created_at.getTime() - a.created_at.getTime())
             .map(cloneRow);

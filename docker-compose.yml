@@ -11,6 +11,9 @@ services:
       RESERVATION_SERVICE_URL: http://reservation-service:3002
       PAYMENT_SERVICE_URL: http://payment-service:3003
       INTERNAL_API_TOKEN: "${INTERNAL_API_TOKEN:?Define INTERNAL_API_TOKEN}"
+      CORS_ORIGINS: "${CORS_ORIGINS:-http://localhost:5173}"
+      PROXY_TIMEOUT_MS: "${PROXY_TIMEOUT_MS:-10000}"
+      HEALTH_TIMEOUT_MS: "${HEALTH_TIMEOUT_MS:-2000}"
     depends_on:
       parking-service:
         condition: service_healthy
@@ -85,10 +88,37 @@ services:
       PORT: "3003"
       DATABASE_URL: "${DATABASE_URL:?Define DATABASE_URL}"
       INTERNAL_API_TOKEN: "${INTERNAL_API_TOKEN:?Define INTERNAL_API_TOKEN}"
+      RESERVATION_SERVICE_URL: http://reservation-service:3002
+      RESERVATION_SERVICE_TIMEOUT_MS: "${RESERVATION_SERVICE_TIMEOUT_MS:-5000}"
+      BODY_LIMIT: "${BODY_LIMIT:-100kb}"
+      QUOTE_TTL_MINUTES: "${QUOTE_TTL_MINUTES:-30}"
     expose:
       - "3003"
+    depends_on:
+      reservation-service:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3003/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - parqueo-internal
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    environment:
+      API_GATEWAY_URL: http://api-gateway:3000
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5173/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 10s
       timeout: 3s
       retries: 5

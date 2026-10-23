@@ -385,3 +385,267 @@ test('un JSON mal formado devuelve VALIDATION_ERROR', async () => {
     assert.equal(status, 400);
     assert.equal(body.error.code, 'VALIDATION_ERROR');
 });
+
+const RESERVATION_ID = '660e8400-e29b-41d4-a716-446655440000';
+const OTHER_RESERVATION_ID = '770e8400-e29b-41d4-a716-446655440000';
+
+test('GET /spaces/:id incluye reservedByReservationId', async () => {
+    pool.query = async () => ({
+        rowCount: 1,
+        rows: [spaceRow({
+            status: 'reserved',
+            reserved_by_reservation_id: RESERVATION_ID
+        })]
+    });
+
+    const { status, body } = await request(`/spaces/${SPACE_ID}`);
+
+    assert.equal(status, 200);
+    assert.equal(body.data.reservedByReservationId, RESERVATION_ID);
+});
+
+test('POST /spaces/:id/reserve reserva una plaza disponible para la reserva', async () => {
+    let updateParams;
+
+    pool.query = async (text, params) => {
+        assert.match(text, /SET status = 'reserved', reserved_by_reservation_id = \$2/);
+        updateParams = params;
+        return {
+            rowCount: 1,
+            rows: [spaceRow({
+                status: 'reserved',
+                reserved_by_reservation_id: RESERVATION_ID
+            })]
+        };
+    };
+
+    const { status, body } = await request(
+        `/spaces/${SPACE_ID}/reserve`,
+        jsonOptions('POST', { reservationId: RESERVATION_ID })
+    );
+
+    assert.equal(status, 200);
+    assert.deepEqual(updateParams, [SPACE_ID, RESERVATION_ID]);
+    assert.equal(body.data.status, 'reserved');
+    assert.equal(body.data.reservedByReservationId, RESERVATION_ID);
+});
+
+test('POST /spaces/:id/reserve es idempotente para la misma reserva', async () => {
+    pool.query = async (text) => {
+        if (text.includes("SET status = 'reserved'")) {
+            return { rowCount: 0, rows: [] };
+        }
+        return {
+            rowCount: 1,
+            rows: [spaceRow({
+                status: 'reserved',
+                reserved_by_reservation_id: RESERVATION_ID
+            })]
+        };
+    };
+
+    const { status, body } = await request(
+        `/spaces/${SPACE_ID}/reserve`,
+        jsonOptions('POST', { reservationId: RESERVATION_ID })
+    );
+
+    assert.equal(status, 200);
+    assert.equal(body.data.reservedByReservationId, RESERVATION_ID);
+});
+
+test('POST /spaces/:id/reserve rechaza una plaza de otra reserva', async () => {
+    pool.query = async (text) => {
+        if (text.includes("SET status = 'reserved'")) {
+            return { rowCount: 0, rows: [] };
+        }
+        return {
+            rowCount: 1,
+            rows: [spaceRow({
+                status: 'reserved',
+                reserved_by_reservation_id: OTHER_RESERVATION_ID
+            })]
+        };
+    };
+
+    const { status, body } = await request(
+        `/spaces/${SPACE_ID}/reserve`,
+        jsonOptions('POST', { reservationId: RESERVATION_ID })
+    );
+
+    assert.equal(status, 409);
+    assert.equal(body.error.code, 'RESERVATION_CONFLICT');
+});
+
+test('POST /spaces/:id/reserve rechaza una plaza no disponible', async () => {
+    pool.query = async (text) => {
+        if (text.includes("SET status = 'reserved'")) {
+            return { rowCount: 0, rows: [] };
+        }
+        return { rowCount: 1, rows: [spaceRow({ status: 'occupied' })] };
+    };
+
+    const { status, body } = await request(
+        `/spaces/${SPACE_ID}/reserve`,
+        jsonOptions('POST', { reservationId: RESERVATION_ID })
+    );
+
+    assert.equal(status, 409);
+    assert.equal(body.error.code, 'SPACE_NOT_AVAILABLE');
+});
+
+test('POST /spaces/:id/reserve exige un reservationId UUID', async () => {
+    pool.query = async () => {
+        throw new Error('No debe consultarse la base de datos');
+    };
+
+    const missing = await request(`/spaces/${SPACE_ID}/reserve`, jsonOptions('POST', {}));
+    assert.equal(missing.status, 400);
+    assert.equal(missing.body.error.code, 'VALIDATION_ERROR');
+    assert.equal(missing.body.error.details[0].field, 'reservationId');
+
+    const invalid = await request(
+        `/spaces/${SPACE_ID}/reserve`,
+        jsonOptions('POST', { reservationId: 'no-es-uuid' })
+    );
+    assert.equal(invalid.status, 400);
+    assert.equal(invalid.body.error.code, 'VALIDATION_ERROR');
+});
+
+test('POST /spaces/:id/reserve devuelve 404 si la plaza no existe', async () => {
+    pool.query = async () => ({ rowCount: 0, rows: [] });
+
+    const { status, body } = await request(
+        `/spaces/${MISSING_ID}/reserve`,
+        jsonOptions('POST', { reservationId: RESERVATION_ID })
+    );
+
+    assert.equal(status, 404);
+    assert.equal(body.error.code, 'RESOURCE_NOT_FOUND');
+});
+
+test('POST /spaces/:id/occupy ocupa una plaza reservada por la misma reserva', async () => {
+    pool.query = async (text, params) => {
+        assert.match(text, /SET status = 'occupied'/);
+        assert.match(text, /reserved_by_reservation_id = \$2/);
+        assert.deepEqual(params, [SPACE_ID, RESERVATION_ID]);
+        return {
+            rowCount: 1,
+            rows: [spaceRow({
+                status: 'occupied',
+                reserved_by_reservation_id: RESERVATION_ID
+            })]
+        };
+    };
+
+    const { status, body } = await request(
+        `/spaces/${SPACE_ID}/occupy`,
+        jsonOptions('POST', { reservationId: RESERVATION_ID })
+    );
+
+    assert.equal(status, 200);
+    assert.equal(body.data.status, 'occupied');
+});
+
+test('POST /spaces/:id/occupy es idempotente si ya está ocupada por la reserva', async () => {
+    pool.query = async (text) => {
+        if (text.includes("SET status = 'occupied'")) {
+            return { rowCount: 0, rows: [] };
+        }
+        return {
+            rowCount: 1,
+            rows: [spaceRow({
+                status: 'occupied',
+                reserved_by_reservation_id: RESERVATION_ID
+            })]
+        };
+    };
+
+    const { status } = await request(
+        `/spaces/${SPACE_ID}/occupy`,
+        jsonOptions('POST', { reservationId: RESERVATION_ID })
+    );
+
+    assert.equal(status, 200);
+});
+
+test('POST /spaces/:id/occupy rechaza una plaza reservada por otra reserva', async () => {
+    pool.query = async (text) => {
+        if (text.includes("SET status = 'occupied'")) {
+            return { rowCount: 0, rows: [] };
+        }
+        return {
+            rowCount: 1,
+            rows: [spaceRow({
+                status: 'reserved',
+                reserved_by_reservation_id: OTHER_RESERVATION_ID
+            })]
+        };
+    };
+
+    const { status, body } = await request(
+        `/spaces/${SPACE_ID}/occupy`,
+        jsonOptions('POST', { reservationId: RESERVATION_ID })
+    );
+
+    assert.equal(status, 409);
+    assert.equal(body.error.code, 'RESERVATION_CONFLICT');
+});
+
+test('POST /spaces/:id/release libera una plaza reservada y limpia el dueño', async () => {
+    pool.query = async (text, params) => {
+        assert.match(text, /SET status = 'available', reserved_by_reservation_id = NULL/);
+        assert.deepEqual(params, [SPACE_ID, RESERVATION_ID]);
+        return {
+            rowCount: 1,
+            rows: [spaceRow({ status: 'available', reserved_by_reservation_id: null })]
+        };
+    };
+
+    const { status, body } = await request(
+        `/spaces/${SPACE_ID}/release`,
+        jsonOptions('POST', { reservationId: RESERVATION_ID })
+    );
+
+    assert.equal(status, 200);
+    assert.equal(body.data.status, 'available');
+    assert.equal(body.data.reservedByReservationId, null);
+});
+
+test('POST /spaces/:id/checkout libera una plaza ocupada', async () => {
+    pool.query = async (text) => {
+        assert.match(text, /SET status = 'available', reserved_by_reservation_id = NULL/);
+        assert.match(text, /status = 'occupied'/);
+        return { rowCount: 1, rows: [spaceRow({ status: 'available' })] };
+    };
+
+    const { status, body } = await request(
+        `/spaces/${SPACE_ID}/checkout`,
+        jsonOptions('POST', { reservationId: RESERVATION_ID })
+    );
+
+    assert.equal(status, 200);
+    assert.equal(body.data.status, 'available');
+});
+
+test('POST /spaces/:id/restore devuelve una plaza ocupada a reservada', async () => {
+    pool.query = async (text) => {
+        assert.match(text, /SET status = 'reserved'/);
+        assert.match(text, /status = 'occupied'/);
+        return {
+            rowCount: 1,
+            rows: [spaceRow({
+                status: 'reserved',
+                reserved_by_reservation_id: RESERVATION_ID
+            })]
+        };
+    };
+
+    const { status, body } = await request(
+        `/spaces/${SPACE_ID}/restore`,
+        jsonOptions('POST', { reservationId: RESERVATION_ID })
+    );
+
+    assert.equal(status, 200);
+    assert.equal(body.data.status, 'reserved');
+    assert.equal(body.data.reservedByReservationId, RESERVATION_ID);
+});

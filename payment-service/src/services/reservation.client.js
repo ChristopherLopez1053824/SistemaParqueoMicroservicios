@@ -4,23 +4,25 @@ function reservationBaseUrl() {
     return (process.env.RESERVATION_SERVICE_URL || 'http://localhost:3002').replace(/\/+$/, '');
 }
 
-function unavailable(message) {
-    return new AppError(503, CODES.SERVICE_UNAVAILABLE, message);
-}
-
 function serviceUnavailable(error) {
     console.error(`Reservation Service inaccesible: ${error.message}`);
-    return unavailable('El Reservation Service no está disponible en este momento.');
+    return new AppError(503, CODES.SERVICE_UNAVAILABLE, 'El Reservation Service no está disponible en este momento.');
 }
 
-async function fetchSession(sessionId) {
+async function fetchSession(sessionId, requestId) {
     const configuredTimeout = Number(process.env.RESERVATION_SERVICE_TIMEOUT_MS);
     const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 5000;
+    const internalApiToken = process.env.INTERNAL_API_TOKEN || null;
+    const headers = {
+        Accept: 'application/json',
+        ...(requestId ? { 'x-request-id': requestId } : {}),
+        ...(internalApiToken ? { 'x-internal-token': internalApiToken } : {})
+    };
 
     let response;
     try {
         response = await fetch(`${reservationBaseUrl()}/sessions/${sessionId}`, {
-            headers: { Accept: 'application/json' },
+            headers,
             signal: AbortSignal.timeout(timeoutMs)
         });
     } catch (error) {
@@ -31,7 +33,11 @@ async function fetchSession(sessionId) {
 
     if (!response.ok) {
         console.error(`Reservation Service respondió ${response.status} para la sesión ${sessionId}`);
-        throw unavailable('El Reservation Service no está disponible en este momento.');
+        throw new AppError(
+            503,
+            CODES.SERVICE_UNAVAILABLE,
+            'El Reservation Service no está disponible en este momento.'
+        );
     }
 
     let body;
@@ -47,7 +53,11 @@ async function fetchSession(sessionId) {
 
     if (typeof session !== 'object' || !session.sessionId) {
         console.error('Reservation Service devolvió una sesión con formato inesperado.');
-        throw unavailable('El Reservation Service no está disponible en este momento.');
+        throw new AppError(
+            502,
+            CODES.SERVICE_UNAVAILABLE,
+            'El Reservation Service devolvió una respuesta inválida.'
+        );
     }
 
     return session;
