@@ -105,6 +105,15 @@ test('rechaza la entrada si la plaza no está reservada por la reserva', async (
     assert.equal(response.body.error.code, 'INVALID_STATE_TRANSITION');
 });
 
+test('no se puede cerrar una sesión inexistente', async (t) => {
+    const { server } = await setup(t);
+
+    const response = await request(server, 'POST', `/sessions/${MISSING_SESSION_ID}/exit`);
+
+    assert.equal(response.status, 404);
+    assert.equal(response.body.error.code, 'RESOURCE_NOT_FOUND');
+});
+
 test('registra una salida válida, calcula durationSeconds y libera la plaza', async (t) => {
     const context = await setup(t);
     const { server, parkingClient, repository, clock } = context;
@@ -202,4 +211,53 @@ test('consulta sesiones existentes e inexistentes', async (t) => {
     const missing = await request(server, 'GET', `/sessions/${MISSING_SESSION_ID}`);
     assert.equal(missing.status, 404);
     assert.equal(missing.body.error.code, 'RESOURCE_NOT_FOUND');
+});
+
+test('asigna un número de ticket legible a cada sesión', async (t) => {
+    const context = await setup(t);
+    const { server, parkingClient } = context;
+    parkingClient.addSpace(SPACE_ID);
+
+    const { session } = await createActiveSession(server, context);
+
+    assert.match(session.ticketNumber, /^PAR-\d{6}$/);
+});
+
+test('lista sesiones por placa y por número de ticket', async (t) => {
+    const context = await setup(t);
+    const { server, parkingClient } = context;
+    parkingClient.addSpace(SPACE_ID);
+    parkingClient.addSpace('77777777-7777-4777-8777-777777777777');
+
+    const { session: first } = await createActiveSession(server, context);
+    const secondReservation = await createReservation(server, {
+        spaceId: '77777777-7777-4777-8777-777777777777',
+        vehiclePlate: 'Z999XYZ'
+    });
+    const secondEntry = await request(server, 'POST', `/sessions/${secondReservation.body.data.id}/entry`);
+    const second = secondEntry.body.data;
+
+    const byPlate = await request(server, 'GET', '/sessions?vehiclePlate=P123');
+    assert.equal(byPlate.status, 200);
+    assert.equal(byPlate.body.data.length, 1);
+    assert.equal(byPlate.body.data[0].sessionId, first.sessionId);
+
+    const byTicket = await request(server, 'GET', `/sessions?ticketNumber=${encodeURIComponent(second.ticketNumber)}`);
+    assert.equal(byTicket.status, 200);
+    assert.equal(byTicket.body.data.length, 1);
+    assert.equal(byTicket.body.data[0].sessionId, second.sessionId);
+
+    const all = await request(server, 'GET', '/sessions');
+    assert.equal(all.status, 200);
+    assert.equal(all.body.data.length, 2);
+    assert.equal(all.body.meta.total, 2);
+});
+
+test('rechaza un número de ticket con formato inválido', async (t) => {
+    const { server } = await setup(t);
+
+    const response = await request(server, 'GET', '/sessions?ticketNumber=not-a-ticket');
+
+    assert.equal(response.status, 400);
+    assert.equal(response.body.error.code, 'VALIDATION_ERROR');
 });

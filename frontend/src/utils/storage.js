@@ -24,9 +24,9 @@ export function getRecentSessions() {
     return read(SESSIONS_KEY, []);
 }
 
-export function rememberSession({ sessionId, reservationId, vehiclePlate }) {
+export function rememberSession({ sessionId, ticketNumber, reservationId, vehiclePlate }) {
     const others = getRecentSessions().filter((s) => s.sessionId !== sessionId);
-    write(SESSIONS_KEY, [{ sessionId, reservationId, vehiclePlate }, ...others].slice(0, 10));
+    write(SESSIONS_KEY, [{ sessionId, ticketNumber, reservationId, vehiclePlate }, ...others].slice(0, 10));
 }
 
 // La clave se guarda por quoteId para reutilizarla si el intento se reintenta,

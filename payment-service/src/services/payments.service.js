@@ -71,9 +71,14 @@ async function findPaymentByIdempotencyKey(idempotencyKey) {
     return result.rows[0] || null;
 }
 
-async function findPaymentBySessionOrQuote(sessionId, quoteId) {
+// Solo un pago "succeeded" representa la obligación cumplida. Un intento previo
+// "failed" (o "pending") no debe bloquear para siempre un reintento legítimo con
+// una Idempotency-Key nueva: ver sql/02_payments_retry_after_failure.sql.
+async function findSucceededPaymentBySessionOrQuote(sessionId, quoteId) {
     const result = await query(
-        'SELECT * FROM payments.payments WHERE session_id = $1 OR quote_id = $2 LIMIT 1',
+        `SELECT * FROM payments.payments
+         WHERE (session_id = $1 OR quote_id = $2) AND status = 'succeeded'
+         LIMIT 1`,
         [sessionId, quoteId]
     );
     return result.rows[0] || null;
@@ -136,8 +141,8 @@ async function registerPayment({ sessionId, quoteId, idempotencyKey }) {
         ]);
     }
 
-    const alreadyProcessed = await findPaymentBySessionOrQuote(sessionId, quoteId);
-    if (alreadyProcessed) {
+    const alreadySucceeded = await findSucceededPaymentBySessionOrQuote(sessionId, quoteId);
+    if (alreadySucceeded) {
         throw new AppError(409, CODES.PAYMENT_ALREADY_PROCESSED, 'La sesión indicada ya tiene un pago registrado.');
     }
 

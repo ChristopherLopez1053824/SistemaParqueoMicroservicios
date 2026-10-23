@@ -3,12 +3,16 @@ const RESERVATION_COLUMNS = `
     space_id,
     vehicle_plate,
     status,
+    starts_at,
+    ends_at,
+    space_claimed_at,
     created_at,
     updated_at
 `;
 
 const SESSION_COLUMNS = `
     id,
+    ticket_number,
     reservation_id,
     space_id,
     vehicle_plate,
@@ -63,12 +67,13 @@ class ReservationTransaction {
         return result.rows[0] || null;
     }
 
-    async insertReservation({ id, spaceId, vehiclePlate }) {
+    async insertReservation({ id, spaceId, vehiclePlate, startsAt, endsAt, spaceClaimedAt = null }) {
         const result = await this.client.query(
-            `INSERT INTO reservations.reservations (id, space_id, vehicle_plate, status)
-             VALUES ($1, $2, $3, 'confirmed')
+            `INSERT INTO reservations.reservations
+                (id, space_id, vehicle_plate, status, starts_at, ends_at, space_claimed_at)
+             VALUES ($1, $2, $3, 'confirmed', $4, $5, $6)
              RETURNING ${RESERVATION_COLUMNS}`,
-            [id, spaceId, vehiclePlate]
+            [id, spaceId, vehiclePlate, startsAt, endsAt, spaceClaimedAt]
         );
         return result.rows[0];
     }
@@ -80,6 +85,19 @@ class ReservationTransaction {
              WHERE id = $1 AND status = ANY($3::text[])
              RETURNING ${RESERVATION_COLUMNS}`,
             [id, toStatus, fromStatuses]
+        );
+        return result.rows[0] || null;
+    }
+
+    // Reclama la plaza física al registrar la entrada de una reserva que fue
+    // programada a futuro (ver ReservationService.registerEntry).
+    async markSpaceClaimed(id, claimedAt) {
+        const result = await this.client.query(
+            `UPDATE reservations.reservations
+             SET space_claimed_at = $2
+             WHERE id = $1 AND space_claimed_at IS NULL
+             RETURNING ${RESERVATION_COLUMNS}`,
+            [id, claimedAt]
         );
         return result.rows[0] || null;
     }
@@ -186,6 +204,26 @@ class ReservationRepository {
         return result.rows;
     }
 
+    // Reservas confirmadas cuyo plazo de llegada (starts_at + graceMinutes) ya
+    // pasó y que nunca registraron una sesión: no-shows a expirar. Usado por
+    // ExpirationService.
+    async findExpiredNoShowReservations({ graceMinutes, limit = 20 }) {
+        const result = await this.pool.query(
+            `SELECT ${RESERVATION_COLUMNS}
+             FROM reservations.reservations AS r
+             WHERE r.status = 'confirmed'
+               AND r.starts_at + ($1 * INTERVAL '1 minute') <= NOW()
+               AND NOT EXISTS (
+                   SELECT 1 FROM reservations.parking_sessions AS s
+                   WHERE s.reservation_id = r.id
+               )
+             ORDER BY r.starts_at
+             LIMIT $2`,
+            [graceMinutes, limit]
+        );
+        return result.rows;
+    }
+
     async findReservationById(id) {
         const result = await this.pool.query(
             `SELECT ${RESERVATION_COLUMNS}
@@ -204,6 +242,39 @@ class ReservationRepository {
             [id]
         );
         return result.rows[0] || null;
+    }
+
+    async listSessions({ status = null, vehiclePlate = null, ticketNumber = null, limit = 50 } = {}) {
+        const conditions = [];
+        const params = [];
+
+        if (status) {
+            params.push(status);
+            conditions.push(`status = $${params.length}`);
+        }
+
+        if (vehiclePlate) {
+            params.push(`${vehiclePlate.toUpperCase()}%`);
+            conditions.push(`UPPER(vehicle_plate) LIKE $${params.length}`);
+        }
+
+        if (ticketNumber !== null && ticketNumber !== undefined) {
+            params.push(ticketNumber);
+            conditions.push(`ticket_number = $${params.length}`);
+        }
+
+        const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+        params.push(Math.min(Math.max(1, limit), 100));
+
+        const result = await this.pool.query(
+            `SELECT ${SESSION_COLUMNS}
+             FROM reservations.parking_sessions
+             ${where}
+             ORDER BY entry_at DESC
+             LIMIT $${params.length}`,
+            params
+        );
+        return result.rows;
     }
 
     async findOperationById(id) {
@@ -400,7 +471,7 @@ class ReservationRepository {
                  updated_at = NOW()
              FROM candidate
              WHERE operation.id = candidate.id
-             RETURNING ${OPERATION_COLUMNS}`,
+             RETURNING operation.*`,
             [workerId, leaseSeconds]
         );
         return operation.rows[0] || null;

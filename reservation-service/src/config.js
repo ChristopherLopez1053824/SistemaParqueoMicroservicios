@@ -29,5 +29,18 @@ module.exports = {
         retryBaseMs: toPositiveInt(process.env.RECONCILIATION_RETRY_BASE_MS, 1000),
         retryMaxMs: toPositiveInt(process.env.RECONCILIATION_RETRY_MAX_MS, 60000),
         maxAttempts: toPositiveInt(process.env.RECONCILIATION_MAX_ATTEMPTS, 10)
+    },
+    // Reservas programadas por franja horaria: ver migrations/004_scheduled_reservations.sql.
+    scheduling: {
+        maxAdvanceMinutes: toPositiveInt(process.env.RESERVATION_MAX_ADVANCE_MINUTES, 120),
+        defaultDurationMinutes: toPositiveInt(process.env.RESERVATION_DEFAULT_DURATION_MINUTES, 240),
+        minDurationMinutes: toPositiveInt(process.env.RESERVATION_MIN_DURATION_MINUTES, 15),
+        maxDurationMinutes: toPositiveInt(process.env.RESERVATION_MAX_DURATION_MINUTES, 480)
+    },
+    expiration: {
+        enabled: toBoolean(process.env.RESERVATION_EXPIRATION_ENABLED, true),
+        pollIntervalMs: toPositiveInt(process.env.RESERVATION_EXPIRATION_POLL_INTERVAL_MS, 60000),
+        graceMinutes: toPositiveInt(process.env.RESERVATION_NO_SHOW_GRACE_MINUTES, 30),
+        batchSize: toPositiveInt(process.env.RESERVATION_EXPIRATION_BATCH_SIZE, 20)
     }
 };

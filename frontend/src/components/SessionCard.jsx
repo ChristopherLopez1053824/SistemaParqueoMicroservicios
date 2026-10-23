@@ -26,12 +26,10 @@ export default function SessionCard({ session, children }) {
     return (
         <div className="card session-card">
             <div className="card-header">
-                <h3>Sesión de estacionamiento</h3>
+                <h3>Ticket {session.ticketNumber ?? '—'}</h3>
                 <StatusBadge status={session.status} labels={SESSION_STATUS_LABELS} />
             </div>
             <dl className="kv">
-                <dt>sessionId</dt><dd><code>{session.sessionId ?? session.id}</code></dd>
-                <dt>reservationId</dt><dd><code>{session.reservationId ?? '—'}</code></dd>
                 <dt>Placa</dt><dd>{session.vehiclePlate ?? '—'}</dd>
                 <dt>Entrada</dt><dd>{formatDateTime(session.entryAt)}</dd>
                 <dt>Salida</dt><dd>{formatDateTime(session.exitAt)}</dd>
@@ -40,6 +38,8 @@ export default function SessionCard({ session, children }) {
                     {formatDuration(duration)}
                     {active && <span className="muted"> (en curso)</span>}
                 </dd>
+                <dt>Referencia interna</dt>
+                <dd><code className="small muted">{session.sessionId ?? session.id}</code></dd>
             </dl>
             {children && <div className="card-actions">{children}</div>}
         </div>

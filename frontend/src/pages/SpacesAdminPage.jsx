@@ -10,15 +10,19 @@ export default function SpacesAdminPage() {
     const [spaces, setSpaces] = useState([]);
     const [form, setForm] = useState(EMPTY_FORM);
     const [formErrors, setFormErrors] = useState({});
+    const [loading, setLoading] = useState(true);
     const [busy, setBusy] = useState(null);
     const [error, setError] = useState(null);
     const [notice, setNotice] = useState(null);
 
     const load = useCallback(async () => {
+        setLoading(true);
         try {
             setSpaces((await listSpaces()).spaces);
         } catch (err) {
             setError(err);
+        } finally {
+            setLoading(false);
         }
     }, []);
 
@@ -98,34 +102,43 @@ export default function SpacesAdminPage() {
 
                 <div className="card">
                     <h2>Estado de las plazas</h2>
-                    <div className="table-wrap">
-                        <table>
-                            <thead>
-                                <tr><th>Código</th><th>Nivel</th><th>Tipo</th><th>Estado</th><th>Cambiar a</th></tr>
-                            </thead>
-                            <tbody>
-                                {spaces.map((s) => (
-                                    <tr key={s.id}>
-                                        <td>{s.code}</td>
-                                        <td>{s.level}</td>
-                                        <td>{SPACE_TYPE_LABELS[s.spaceType] ?? s.spaceType}</td>
-                                        <td><StatusBadge status={s.status} labels={SPACE_STATUS_LABELS} /></td>
-                                        <td>
-                                            <select
-                                                value={s.status}
-                                                disabled={busy !== null}
-                                                onChange={(e) => handleStatus(s, e.target.value)}
-                                            >
-                                                {Object.entries(SPACE_STATUS_LABELS).map(([value, label]) => (
-                                                    <option key={value} value={value}>{label}</option>
-                                                ))}
-                                            </select>
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
+                    {loading && spaces.length === 0 ? (
+                        <p className="muted">Cargando plazas…</p>
+                    ) : spaces.length === 0 ? (
+                        <p className="muted">Todavía no hay plazas registradas.</p>
+                    ) : (
+                        <div className="table-wrap">
+                            <table>
+                                <thead>
+                                    <tr><th>Código</th><th>Nivel</th><th>Tipo</th><th>Estado</th><th>Cambiar a</th></tr>
+                                </thead>
+                                <tbody>
+                                    {spaces.map((s) => (
+                                        <tr key={s.id}>
+                                            <td>{s.code}</td>
+                                            <td>{s.level}</td>
+                                            <td>{SPACE_TYPE_LABELS[s.spaceType] ?? s.spaceType}</td>
+                                            <td><StatusBadge status={s.status} labels={SPACE_STATUS_LABELS} /></td>
+                                            <td>
+                                                {s.status === 'available' || s.status === 'maintenance' ? (
+                                                    <select
+                                                        value={s.status}
+                                                        disabled={busy !== null}
+                                                        onChange={(e) => handleStatus(s, e.target.value)}
+                                                    >
+                                                        <option value="available">{SPACE_STATUS_LABELS.available}</option>
+                                                        <option value="maintenance">{SPACE_STATUS_LABELS.maintenance}</option>
+                                                    </select>
+                                                ) : (
+                                                    <span className="muted small">Se gestiona desde Reservas</span>
+                                                )}
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
                 </div>
             </div>
         </div>

@@ -48,7 +48,7 @@ export async function request(path, { method = 'GET', body, headers = {} } = {})
             code: timedOut ? 'TIMEOUT' : 'NETWORK_ERROR',
             message: timedOut
                 ? 'La solicitud excedió el tiempo de espera. Puede haberse procesado; verifique el estado antes de repetirla.'
-                : 'No se pudo conectar con el API Gateway.'
+                : 'No pudimos conectar con el servidor. Comprueba la conexión e inténtalo nuevamente.'
         });
     } finally {
         clearTimeout(timer);

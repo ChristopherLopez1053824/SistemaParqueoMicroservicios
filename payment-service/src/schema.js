@@ -3,11 +3,16 @@ const fs = require('fs');
 const path = require('path');
 const pool = require('./db');
 
-const SQL_FILE = path.join(__dirname, '../sql/01_payments_schema.sql');
+const MIGRATION_FILES = [
+    '01_payments_schema.sql',
+    '02_payments_retry_after_failure.sql'
+];
 
 async function ensureSchema() {
-    const sql = fs.readFileSync(SQL_FILE, 'utf8');
-    await pool.query(sql);
+    for (const file of MIGRATION_FILES) {
+        const sql = fs.readFileSync(path.join(__dirname, '../sql', file), 'utf8');
+        await pool.query(sql);
+    }
 }
 
 if (require.main === module) {

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import Alert from '../components/Alert';
 import SessionCard from '../components/SessionCard';
+import SessionPicker from '../components/SessionPicker';
 import { getSession, registerEntry, registerExit } from '../services/reservation.service';
 import { isUuid, shortId } from '../utils/format';
 import { getRecentSessions, rememberSession } from '../utils/storage';
@@ -17,6 +18,7 @@ export default function SessionsPage() {
     const [error, setError] = useState(null);
     const [notice, setNotice] = useState(null);
     const [recent, setRecent] = useState(getRecentSessions);
+    const [manualLookup, setManualLookup] = useState(false);
 
     async function showSession(id) {
         const data = await getSession(id);
@@ -55,9 +57,14 @@ export default function SessionsPage() {
         run('entry', async () => {
             const result = await registerEntry(id);
             const newSessionId = result.sessionId ?? result.id;
-            rememberSession({ sessionId: newSessionId, reservationId: id, vehiclePlate: result.vehiclePlate });
+            rememberSession({
+                sessionId: newSessionId,
+                ticketNumber: result.ticketNumber,
+                reservationId: id,
+                vehiclePlate: result.vehiclePlate
+            });
             setRecent(getRecentSessions());
-            setNotice(`Entrada registrada. sessionId: ${newSessionId}`);
+            setNotice(`Entrada registrada. Ticket ${result.ticketNumber ?? newSessionId}.`);
             if (result.entryAt && result.status) {
                 setSession({ ...result, sessionId: newSessionId });
                 setSessionId(newSessionId);
@@ -71,10 +78,15 @@ export default function SessionsPage() {
         e?.preventDefault();
         const id = sessionId.trim();
         if (!isUuid(id)) {
-            setError({ message: 'El sessionId debe ser un UUID válido.', code: 'INVALID_ID' });
+            setError({ message: 'El identificador debe ser un UUID válido.', code: 'INVALID_ID' });
             return;
         }
         run('lookup', () => showSession(id));
+    }
+
+    function handlePickSession(picked) {
+        setNotice(null);
+        run('lookup', () => showSession(picked.sessionId));
     }
 
     function handleExit() {
@@ -136,21 +148,40 @@ export default function SessionsPage() {
                         </p>
                     </form>
 
-                    <form className="card form" onSubmit={handleLookup} noValidate>
-                        <h2>Consultar sesión / registrar salida</h2>
-                        <label>
-                            sessionId
-                            <input
-                                type="text"
-                                value={sessionId}
-                                onChange={(e) => setSessionId(e.target.value)}
-                                placeholder="UUID de la sesión"
-                            />
-                        </label>
-                        <button type="submit" className="btn btn-secondary" disabled={busy !== null}>
-                            {busy === 'lookup' ? 'Consultando…' : 'Consultar sesión'}
-                        </button>
-                    </form>
+                    <div className="card">
+                        <h2>Buscar sesión / registrar salida</h2>
+                        <p className="muted small">
+                            Busca por la placa del vehículo o por el número de ticket para ver el detalle o registrar la salida.
+                        </p>
+                        {!manualLookup ? (
+                            <>
+                                <SessionPicker onSelect={handlePickSession} />
+                                <button type="button" className="advanced-toggle" onClick={() => setManualLookup(true)}>
+                                    ¿Ya tienes el identificador técnico? Ingrésalo manualmente.
+                                </button>
+                            </>
+                        ) : (
+                            <>
+                                <form className="form" onSubmit={handleLookup} noValidate>
+                                    <label>
+                                        Identificador técnico de la sesión
+                                        <input
+                                            type="text"
+                                            value={sessionId}
+                                            onChange={(e) => setSessionId(e.target.value)}
+                                            placeholder="UUID de la sesión"
+                                        />
+                                    </label>
+                                    <button type="submit" className="btn btn-secondary" disabled={busy !== null}>
+                                        {busy === 'lookup' ? 'Consultando…' : 'Consultar sesión'}
+                                    </button>
+                                </form>
+                                <button type="button" className="advanced-toggle" onClick={() => setManualLookup(false)}>
+                                    Volver a la búsqueda por placa o ticket
+                                </button>
+                            </>
+                        )}
+                    </div>
 
                     {recent.length > 0 && (
                         <div className="card">
@@ -163,7 +194,7 @@ export default function SessionsPage() {
                                             className="link-button"
                                             onClick={() => run('lookup', () => showSession(s.sessionId))}
                                         >
-                                            {s.vehiclePlate || 'Vehículo'} · <code>{shortId(s.sessionId)}</code>
+                                            {s.vehiclePlate || 'Vehículo'} · {s.ticketNumber || shortId(s.sessionId)}
                                         </button>
                                     </li>
                                 ))}
@@ -191,7 +222,7 @@ export default function SessionsPage() {
                             )}
                         </SessionCard>
                     ) : (
-                        <div className="card"><p className="muted">Registre una entrada o consulte una sesión para ver su detalle.</p></div>
+                        <div className="card"><p className="muted">Registre una entrada o busque una sesión por placa o ticket para ver su detalle.</p></div>
                     )}
                 </div>
             </div>

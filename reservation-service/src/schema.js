@@ -5,7 +5,9 @@ const pool = require('./db');
 
 const MIGRATION_FILES = [
     '001_init.sql',
-    '002_reconciliation_operations.sql'
+    '002_reconciliation_operations.sql',
+    '003_session_ticket_number.sql',
+    '004_scheduled_reservations.sql'
 ];
 
 async function ensureSchema() {
