@@ -22,4 +22,6 @@ Prototipo académico desarrollado mediante una arquitectura de microservicios.
 
 ## Estado del proyecto
 
-Estructura inicial del repositorio. Los servicios todavía están pendientes de implementación.
+Reservation Service implementado: reservas, entradas, salidas, sesiones y coordinación HTTP con Parking Service. Consulta `reservation-service/README.md` para la configuración, migraciones, endpoints y pruebas.
+
+Los demás servicios continúan en desarrollo.
