@@ -28,27 +28,34 @@ Responsabilidades:
 - **API Gateway**: punto de entrada único, CORS, `requestId`, proxy HTTP,
   timeouts y normalización de errores de transporte. No contiene lógica de
   negocio.
-- **Parking Service**: plazas, tipos, estados y transiciones atómicas. Expone
-  una interfaz HTTP para que Reservation coordine la ocupación.
-- **Reservation Service**: reservas, entradas, salidas, sesiones y
-  reconciliación de operaciones con Parking.
-- **Payment Service**: cotización por duración, tarifa y registro de pagos
-  simulados. Consulta la sesión finalizada en Reservation.
-- **Frontend**: pantallas de plazas, reservas, sesiones y pagos.
+- **Parking Service**: plazas, tipos, estados y transiciones atómicas.
+  `reserved`/`occupied` solo se alcanzan a través de los endpoints de reserva
+  (dueño de reservación); el endpoint administrativo genérico de estado solo
+  administra `available ↔ maintenance`.
+- **Reservation Service**: reservas (inmediatas o programadas con franja
+  horaria), entradas, salidas, sesiones de parqueo (con ticket legible
+  `PAR-000123`), reconciliación de operaciones con Parking, y expiración
+  automática de reservas por no-show.
+- **Payment Service**: cotización por duración, tarifa congelada por
+  cotización y registro de pagos simulados. Consulta la sesión finalizada en
+  Reservation.
+- **Frontend**: panel de plazas, reservas (inmediatas o programadas),
+  entrada/salida (con búsqueda de sesión por placa o ticket), pagos y
+  administración de plazas.
 
 ## Servicios y puertos
 
 | Componente | Directorio | Puerto local | Red Compose |
 | --- | --- | --- | --- |
-| Frontend (Vite) | `frontend/` | `5173` | fuera de Compose |
+| Frontend (Vite) | `frontend/` | `5173` | `frontend:5173` |
 | API Gateway | `api-gateway/` | `3000` | `api-gateway:3000` |
 | Parking Service | `parking-service/` | `3001` | `parking-service:3001` |
 | Reservation Service | `reservation-service/` | `3002` | `reservation-service:3002` |
 | Payment Service | `payment-service/` | `3003` | `payment-service:3003` |
 | Supabase PostgreSQL | externo | `5432` | externo |
 
-En Compose solo el Gateway publica puerto al host; los microservicios quedan en
-la red interna `parqueo-internal`.
+En Compose, el Gateway y el Frontend publican puerto al host; los
+microservicios backend quedan solo en la red interna `parqueo-internal`.
 
 ## Rutas públicas del Gateway
 
@@ -57,11 +64,12 @@ la red interna `parqueo-internal`.
 | GET | `/api/parking/spaces` | Parking | `/spaces` |
 | GET | `/api/parking/spaces/:id` | Parking | `/spaces/:id` |
 | POST | `/api/parking/spaces` | Parking | `/spaces` |
-| PATCH | `/api/parking/spaces/:id/status` | Parking | `/spaces/:id/status` |
+| PATCH | `/api/parking/spaces/:id/status` | Parking | `/spaces/:id/status` (solo `available`/`maintenance`) |
 | POST | `/api/reservations` | Reservation | `/reservations` |
 | GET | `/api/reservations` | Reservation | `/reservations` |
 | GET | `/api/reservations/:id` | Reservation | `/reservations/:id` |
 | PATCH | `/api/reservations/:id/cancel` | Reservation | `/reservations/:id/cancel` |
+| GET | `/api/reservations/sessions` | Reservation | `/sessions` (lista/busca por `status`, `vehiclePlate`, `ticketNumber`) |
 | POST | `/api/reservations/sessions/:reservationId/entry` | Reservation | `/sessions/:reservationId/entry` |
 | POST | `/api/reservations/sessions/:sessionId/exit` | Reservation | `/sessions/:sessionId/exit` |
 | GET | `/api/reservations/sessions/:sessionId` | Reservation | `/sessions/:sessionId` |
@@ -70,11 +78,14 @@ la red interna `parqueo-internal`.
 | GET | `/api/payments/:id` | Payment | `/:id` |
 | GET | `/api/payments/session/:sessionId` | Payment | `/session/:sessionId` |
 | GET | `/health` | Gateway | liveness |
-| GET | `/health/dependencies` | Gateway | disponibilidad de los tres servicios |
+| GET | `/health/dependencies` | Gateway | disponibilidad de los tres servicios backend |
 
-Rutas internas adicionales de Parking usadas por Reservation (no pensadas para
-el frontend): `POST /spaces/:id/reserve`, `/occupy`, `/release`, `/checkout` y
-`/restore`, con cuerpo `{ "reservationId": "UUID" }`.
+`POST /api/reservations` acepta `spaceId` y `vehiclePlate` siempre; `startsAt`
+(ISO 8601) y `durationMinutes` son opcionales — si se omiten, la reserva es
+inmediata (reclama la plaza al instante, como antes). Rutas internas
+adicionales de Parking usadas por Reservation (no pensadas para el frontend):
+`POST /spaces/:id/reserve`, `/occupy`, `/release`, `/checkout` y `/restore`,
+con cuerpo `{ "reservationId": "UUID" }`.
 
 ## Contrato HTTP
 
@@ -110,8 +121,11 @@ Respuesta de error:
 
 Convenciones: JSON en `camelCase`, tablas/columnas en `snake_case`, UUID v4,
 fechas ISO 8601 UTC con sufijo `Z`, importes enteros en centavos (`amountMinor`),
-moneda GTQ. Las respuestas incluyen `x-request-id`; el Gateway propaga el UUID
-válido enviado por el cliente o genera uno nuevo y lo reenvía a los servicios.
+moneda GTQ. El número de ticket de una sesión se expone como `ticketNumber`
+(`PAR-000123`) de solo presentación; el identificador real sigue siendo
+`sessionId` (UUID). Las respuestas incluyen `x-request-id`; el Gateway propaga
+el UUID válido enviado por el cliente o genera uno nuevo y lo reenvía a los
+servicios.
 
 Códigos usados:
 
@@ -122,12 +136,33 @@ Códigos usados:
 | `400` | Cuerpo, parámetros o UUID inválidos |
 | `401` | Token interno ausente o incorrecto |
 | `404` | Recurso o ruta inexistente |
-| `409` | Conflicto de estado o reserva duplicada |
+| `409` | Conflicto de estado, reserva duplicada u horario superpuesto |
 | `422` | Regla de negocio incumplida (por ejemplo, cotización expirada) |
 | `500` | Error interno del servicio |
 | `502` | Respuesta inválida o conexión cerrada por el microservicio |
 | `503` | Microservicio o base de datos no disponible |
 | `504` | Timeout del microservicio |
+
+## Dependencias
+
+Tiempo de ejecución: Node.js 18+ (recomendado 20+) en todos los servicios, y
+PostgreSQL (Supabase) con la extensión `btree_gist` habilitada (la usa la
+restricción de no-solapamiento de reservas). Para contenedores: Podman +
+Podman Compose.
+
+| Paquete | Usado en | Para qué |
+| --- | --- | --- |
+| `express` | los 4 servicios backend | servidor HTTP |
+| `pg` | parking, reservation, payment | cliente PostgreSQL |
+| `dotenv` | los 4 servicios backend | carga de `.env` |
+| `http-proxy-middleware` | api-gateway | proxy hacia los microservicios |
+| `react`, `react-dom` | frontend | interfaz |
+| `react-router-dom` | frontend | enrutamiento de páginas |
+| `vite`, `@vitejs/plugin-react` | frontend (dev) | servidor de desarrollo y build |
+| `nodemon` | los 4 servicios backend (dev) | recarga en desarrollo |
+
+Ninguna dependencia de prueba adicional: los 4 servicios backend usan
+`node:test` (incluido en Node.js).
 
 ## Variables de entorno
 
@@ -138,6 +173,7 @@ Usar `.env.example` como plantilla. Nunca versionar `.env` ni credenciales.
 | `DATABASE_URL` | Sí | Cadena PostgreSQL de Supabase (externa a Compose) |
 | `INTERNAL_API_TOKEN` | Sí en Compose | Token compartido Gateway ↔ microservicios |
 | `API_GATEWAY_PORT` | No | Puerto público del Gateway (por defecto `3000`) |
+| `FRONTEND_PORT` | No | Puerto público del Frontend (por defecto `5173`) |
 | `PARKING_SERVICE_URL` | No | URL de Parking (`http://localhost:3001` local; `http://parking-service:3001` en Compose) |
 | `RESERVATION_SERVICE_URL` | No | URL de Reservation (`http://localhost:3002` local; `http://reservation-service:3002` en Compose) |
 | `PAYMENT_SERVICE_URL` | No | URL de Payment (`http://localhost:3003` local; `http://payment-service:3003` en Compose) |
@@ -148,34 +184,45 @@ Usar `.env.example` como plantilla. Nunca versionar `.env` ni credenciales.
 | `CORS_ORIGINS` | No | Orígenes permitidos separados por coma (por defecto `http://localhost:5173`) |
 | `BODY_LIMIT` | No | Tamaño máximo de JSON (por defecto `100kb`) |
 | `QUOTE_TTL_MINUTES` | No | Vigencia de cotizaciones de pago (por defecto `30`) |
-| `RECONCILIATION_*` | No | Worker de reconciliación de Reservation |
+| `RECONCILIATION_*` | No | Worker de reconciliación de Reservation (intervalo, lease, reintentos) |
+| `RESERVATION_MAX_ADVANCE_MINUTES` | No | Anticipación máxima al programar una reserva (por defecto `120`) |
+| `RESERVATION_DEFAULT_DURATION_MINUTES` | No | Duración estimada si no se indica (por defecto `240`) |
+| `RESERVATION_MIN_DURATION_MINUTES` / `_MAX_DURATION_MINUTES` | No | Límites de `durationMinutes` (por defecto `15` / `480`) |
+| `RESERVATION_EXPIRATION_ENABLED` | No | Activa el worker de expiración por no-show (por defecto `true`) |
+| `RESERVATION_EXPIRATION_POLL_INTERVAL_MS` | No | Intervalo de sondeo del worker de expiración (por defecto `60000`) |
+| `RESERVATION_NO_SHOW_GRACE_MINUTES` | No | Minutos de gracia tras `startsAt` antes de cancelar por no-show (por defecto `30`) |
+| `RESERVATION_EXPIRATION_BATCH_SIZE` | No | Reservas procesadas por ciclo del worker de expiración (por defecto `20`) |
 
-Cada servicio carga primero su `.env` local (si existe) y luego el `.env` de la
-raíz para completar variables; el `.env` del servicio tiene prioridad.
+Las variables `RESERVATION_MAX_ADVANCE_MINUTES` y las demás de programación/
+expiración usan sus valores por defecto en Compose (no están listadas en
+`docker-compose.yml`); para cambiarlas en contenedores hay que agregarlas al
+bloque `environment` de `reservation-service`. Fuera de Compose (`npm start`
+directo), cada servicio carga primero su `.env` local (si existe) y luego el
+`.env` de la raíz para completar variables; el `.env` del servicio tiene
+prioridad.
 
 ## Ejecución local
-
-Requisitos: Node.js 18+ (recomendado 20+), acceso a Supabase y, para
-contenedores, Podman + Podman Compose.
 
 ```bash
 cp .env.example .env
 # Editar DATABASE_URL e INTERNAL_API_TOKEN
 ```
 
-Aplicar migraciones existentes (no las ejecuta ningún servicio automáticamente,
-excepto `payment-service` que verifica su esquema al arrancar):
-
-- `parking-service/migrations/001_reservation_coordination.sql`
-- `reservation-service/migrations/001_init.sql` y `002_reconciliation_operations.sql`
-- `payment-service/sql/01_payments_schema.sql` (o `npm run migrate`)
-
-Cada servicio:
+Aplicar migraciones existentes antes del primer arranque (cada servicio tiene
+`npm run migrate`, que ejecuta sus archivos SQL de forma idempotente):
 
 ```bash
-cd parking-service && npm install && npm start
-cd reservation-service && npm install && npm start
-cd payment-service && npm install && npm start
+cd parking-service && npm install && npm run migrate       # 001_reservation_coordination.sql
+cd reservation-service && npm install && npm run migrate   # 001_init.sql .. 004_scheduled_reservations.sql
+cd payment-service && npm install && npm run migrate       # 01_payments_schema.sql, 02_payments_retry_after_failure.sql
+```
+
+Luego, cada servicio:
+
+```bash
+cd parking-service && npm start
+cd reservation-service && npm start
+cd payment-service && npm start
 cd api-gateway && npm install && npm start
 ```
 
@@ -195,8 +242,18 @@ Si el navegador llama al Gateway desde otro origen, definir
 ```bash
 cp .env.example .env
 # Editar DATABASE_URL e INTERNAL_API_TOKEN
-podman compose up --build
-# alternativa: podman-compose up --build
+podman compose up --build -d
+# alternativa: podman-compose up --build -d
+```
+
+Esto levanta los 5 servicios (frontend incluido) en un solo comando. Las
+migraciones no se ejecutan automáticamente al iniciar los contenedores; antes
+de usar el sistema por primera vez hay que aplicarlas una vez:
+
+```bash
+podman compose run --rm parking-service npm run migrate
+podman compose run --rm reservation-service npm run migrate
+podman compose run --rm payment-service npm run migrate
 ```
 
 Comandos útiles:
@@ -206,6 +263,7 @@ podman compose ps
 podman compose logs -f api-gateway
 curl http://localhost:3000/health
 curl http://localhost:3000/health/dependencies
+curl http://localhost:5173/
 ```
 
 `depends_on` con `service_healthy` ordena el arranque, pero no garantiza
@@ -228,7 +286,7 @@ Listar plazas:
 curl http://localhost:3000/api/parking/spaces
 ```
 
-Crear una reserva (usar el `id` de una plaza `available`):
+Crear una reserva inmediata (usar el `id` de una plaza `available`):
 
 ```bash
 curl -i -X POST http://localhost:3000/api/reservations \
@@ -236,11 +294,27 @@ curl -i -X POST http://localhost:3000/api/reservations \
   -d '{"spaceId":"<uuid-plaza>","vehiclePlate":"P123ABC"}'
 ```
 
-Registrar entrada y salida:
+Programar una reserva para dentro de una hora, sin reclamar la plaza todavía:
+
+```bash
+curl -i -X POST http://localhost:3000/api/reservations \
+  -H "Content-Type: application/json" \
+  -d '{"spaceId":"<uuid-plaza>","vehiclePlate":"P123ABC","startsAt":"2026-01-01T15:00:00.000Z","durationMinutes":60}'
+```
+
+Registrar entrada y salida (la entrada reclama la plaza si la reserva era
+programada y aún no se había reclamado):
 
 ```bash
 curl -i -X POST http://localhost:3000/api/reservations/sessions/<reservationId>/entry
 curl -i -X POST http://localhost:3000/api/reservations/sessions/<sessionId>/exit
+```
+
+Buscar una sesión por placa o ticket, sin conocer su UUID:
+
+```bash
+curl "http://localhost:3000/api/reservations/sessions?vehiclePlate=P123"
+curl "http://localhost:3000/api/reservations/sessions?ticketNumber=PAR-000001"
 ```
 
 Cotizar y pagar una sesión finalizada:
@@ -256,50 +330,39 @@ curl -i -X POST http://localhost:3000/api/payments \
   -d '{"quoteId":"<quoteId>","sessionId":"<sessionId>","method":"simulated"}'
 ```
 
-El pago es simulado: `succeeded` no implica dinero real ni modifica la reserva.
+El pago es simulado: `succeeded` no implica dinero real ni modifica la reserva
+ni la plaza (la plaza ya se liberó al registrar la salida).
 
 ## Pruebas
 
 ```bash
-cd api-gateway && npm test
-cd parking-service && npm test
-cd reservation-service && npm test
-cd payment-service && npm test
+cd api-gateway && npm test           # 16 pruebas
+cd parking-service && npm test       # 32 pruebas
+cd reservation-service && npm test   # 60 pruebas
+cd payment-service && npm test       # 20 pruebas
 ```
 
-Las pruebas usan `node:test`. No requieren Supabase ni contenedores:
+Todas usan `node:test` y corren contra una base de datos simulada en memoria
+(no requieren Supabase ni contenedores):
 
-- Gateway: arranque, health, CORS, `requestId`, enrutamiento a los tres
-  servicios, propagación de método/query/body/cabeceras, errores del upstream,
-  `404`, `503`, timeout `504`, health de dependencias.
-- Parking: contrato de plazas y rutas de coordinación, validaciones,
+- **Gateway**: arranque, health, CORS, `requestId`, enrutamiento a los tres
+  servicios backend, propagación de método/query/body/cabeceras, errores del
+  upstream, `404`, `503`, timeout `504`, health de dependencias.
+- **Parking**: contrato de plazas, transiciones válidas/ inválidas del
+  endpoint administrativo (`available ↔ maintenance` solamente), rutas de
+  coordinación (`reserve`/`occupy`/`release`/`checkout`/`restore`),
   idempotencia, conflictos y errores de BD simulados.
-- Reservation: reservas, sesiones, compensaciones, reconciliación y cliente HTTP
-  de Parking (46 pruebas).
-- Payment: health, validaciones de cotización/pago/Idempotency-Key, errores
-  uniformes y cálculo de horas facturables.
+- **Reservation**: reservas inmediatas y programadas (anticipación,
+  solapamiento de horarios, reclamo de plaza en el check-in, expiración por
+  no-show), sesiones, tickets, búsqueda de sesiones, compensaciones,
+  reconciliación y cliente HTTP de Parking.
+- **Payment**: health, validaciones de cotización/pago/Idempotency-Key,
+  cálculo de horas facturables, prevención de doble pago, reintento tras un
+  pago no exitoso, y errores uniformes.
 
-No se ejecutaron pruebas contra una instancia real de Supabase para no modificar
-datos reales. La validación de Compose se hizo con `podman-compose config`; el
-arranque completo requiere credenciales válidas.
-
-## Problemas encontrados y decisiones de integración
-
-- `parking-service/src/server.js` no arrancaba por imports faltantes. Se
-  corrigió y se agregó propagación de `requestId`.
-- Reservation ya consumía rutas de coordinación de Parking que no existían. Se
-  implementaron con `UPDATE` condicional atómico, dueño de plaza e idempotencia.
-- `GET /spaces` de Parking conserva el formato heredado; `GET /spaces/:id` y las
-  transiciones incluyen `reservedByReservationId`, que Reservation necesita.
-- Payment no enviaba `INTERNAL_API_TOKEN` ni `x-request-id` a Reservation. Se
-  corrigió, junto con el mapeo de errores de conexión a `503`.
-- El Gateway no propagaba `requestId`, no tenía CORS, no normalizaba timeouts y
-  parseaba JSON antes del proxy. Se reemplazó por un proxy sin consumir el
-  cuerpo, con errores `502/503/504` y health de dependencias.
-- Compose no pasaba a Payment la URL ni el token de Reservation. Se corrigió y
-  se mantienen los puertos internos existentes.
-- El frontend no se containeriza en este repositorio; se ejecuta con Vite y
-  apunta al Gateway. No hay autenticación de usuarios finales.
+Las migraciones y la integración end-to-end se validan manualmente contra la
+instancia real de Supabase antes de desplegar, sin alterar datos existentes
+del prototipo.
 
 ## Documentación por servicio
 
