@@ -7,9 +7,22 @@ function cloneRow(row) {
     return { ...row };
 }
 
+function cloneOperation(operation) {
+    if (!operation) {
+        return null;
+    }
+
+    return {
+        ...operation,
+        payload: operation.payload ? { ...operation.payload } : {},
+        result: operation.result ? { ...operation.result } : null
+    };
+}
+
 class FakeTransaction {
     constructor(repository) {
         this.repository = repository;
+        this.operationChanges = [];
     }
 
     async lockReservation(id) {
@@ -124,12 +137,33 @@ class FakeTransaction {
         row.updated_at = this.repository.currentTime();
         return cloneRow(row);
     }
+
+    async completeOperation({ id, result = null }) {
+        const operation = this.repository.operations.get(id);
+
+        if (!operation || !['pending', 'processing'].includes(operation.status)) {
+            return null;
+        }
+
+        this.operationChanges.push({ id, previous: cloneOperation(operation) });
+
+        operation.status = 'completed';
+        operation.result = result ? { ...result } : null;
+        operation.locked_by = null;
+        operation.locked_at = null;
+        operation.last_error = null;
+        operation.completed_at = this.repository.currentTime();
+        operation.updated_at = this.repository.currentTime();
+
+        return cloneOperation(operation);
+    }
 }
 
 class FakeReservationRepository {
     constructor({ currentTime = () => new Date() } = {}) {
         this.reservations = new Map();
         this.sessions = new Map();
+        this.operations = new Map();
         this.currentTime = currentTime;
         this.transaction = new FakeTransaction(this);
         this.queue = Promise.resolve();
@@ -152,6 +186,220 @@ class FakeReservationRepository {
         return cloneRow(this.sessions.get(id));
     }
 
+    async findOperationById(id) {
+        return cloneOperation(this.operations.get(id));
+    }
+
+    async createOperation({
+        id,
+        operationType,
+        reservationId = null,
+        sessionId = null,
+        spaceId = null,
+        requestId = null,
+        payload = {},
+        owner,
+        maxAttempts = 10,
+        leaseSeconds = 60
+    }) {
+        const existing = [...this.operations.values()].find((operation) => (
+            operation.operation_type === operationType
+            && operation.reservation_id === reservationId
+            && operation.session_id === sessionId
+            && ['pending', 'processing'].includes(operation.status)
+        ));
+
+        if (existing) {
+            const now = this.currentTime().getTime();
+            const lockedAt = existing.locked_at ? new Date(existing.locked_at).getTime() : 0;
+
+            if (existing.status === 'processing' && lockedAt && (now - lockedAt) < leaseSeconds * 1000) {
+                const error = new Error('Ya existe una operación de reconciliación en curso para este recurso.');
+                error.code = 'RECONCILIATION_OPERATION_BUSY';
+                error.operationId = existing.id;
+                throw error;
+            }
+
+            existing.status = 'processing';
+            existing.payload = { ...payload };
+            existing.request_id = requestId;
+            existing.attempts += 1;
+            existing.locked_by = owner;
+            existing.locked_at = this.currentTime();
+            existing.last_error = null;
+            existing.completed_at = null;
+            existing.updated_at = this.currentTime();
+            return cloneOperation(existing);
+        }
+
+        const timestamp = this.currentTime();
+        const operation = {
+            id,
+            operation_type: operationType,
+            reservation_id: reservationId,
+            session_id: sessionId,
+            space_id: spaceId,
+            request_id: requestId,
+            payload: { ...payload },
+            status: 'processing',
+            attempts: 1,
+            max_attempts: maxAttempts,
+            next_attempt_at: timestamp,
+            locked_by: owner,
+            locked_at: timestamp,
+            last_error: null,
+            result: null,
+            created_at: timestamp,
+            updated_at: timestamp,
+            completed_at: null
+        };
+
+        this.operations.set(id, operation);
+        return cloneOperation(operation);
+    }
+
+    async completeOperation({ id, result = null }) {
+        const operation = this.operations.get(id);
+
+        if (!operation || !['pending', 'processing'].includes(operation.status)) {
+            return null;
+        }
+
+        operation.status = 'completed';
+        operation.result = result ? { ...result } : null;
+        operation.locked_by = null;
+        operation.locked_at = null;
+        operation.last_error = null;
+        operation.completed_at = this.currentTime();
+        operation.updated_at = this.currentTime();
+        return cloneOperation(operation);
+    }
+
+    async failOperation({ id, owner, error }) {
+        const operation = this.operations.get(id);
+
+        if (
+            !operation
+            || !['pending', 'processing'].includes(operation.status)
+            || (operation.locked_by !== null && operation.locked_by !== owner)
+        ) {
+            return null;
+        }
+
+        operation.status = 'failed';
+        operation.locked_by = null;
+        operation.locked_at = null;
+        operation.last_error = error && error.message ? error.message : String(error);
+        operation.completed_at = this.currentTime();
+        operation.updated_at = this.currentTime();
+        return cloneOperation(operation);
+    }
+
+    async deferOperation({ id, owner, error, delayMs = 0 }) {
+        const operation = this.operations.get(id);
+
+        if (!operation || operation.status !== 'processing' || operation.locked_by !== owner) {
+            return null;
+        }
+
+        operation.status = 'pending';
+        operation.locked_by = null;
+        operation.locked_at = null;
+        operation.next_attempt_at = new Date(this.currentTime().getTime() + Math.max(0, delayMs));
+        operation.last_error = error && error.message ? error.message : String(error);
+        operation.updated_at = this.currentTime();
+        return cloneOperation(operation);
+    }
+
+    async claimNextOperation({ workerId, leaseSeconds }) {
+        const now = this.currentTime().getTime();
+        const candidates = [...this.operations.values()]
+            .filter((operation) => {
+                if (operation.status === 'pending') {
+                    return new Date(operation.next_attempt_at).getTime() <= now;
+                }
+
+                if (operation.status !== 'processing') {
+                    return false;
+                }
+
+                const lockedAt = operation.locked_at ? new Date(operation.locked_at).getTime() : 0;
+                return !lockedAt || (now - lockedAt) >= leaseSeconds * 1000;
+            })
+            .sort((a, b) => (
+                new Date(a.next_attempt_at).getTime() - new Date(b.next_attempt_at).getTime()
+                || new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+            ));
+
+        const operation = candidates[0];
+
+        if (!operation) {
+            return null;
+        }
+
+        operation.status = 'processing';
+        operation.attempts += 1;
+        operation.locked_by = workerId;
+        operation.locked_at = this.currentTime();
+        operation.updated_at = this.currentTime();
+
+        return cloneOperation(operation);
+    }
+
+    async rescheduleOperation({ id, workerId, error, delayMs }) {
+        const operation = this.operations.get(id);
+
+        if (!operation || operation.status !== 'processing' || operation.locked_by !== workerId) {
+            return null;
+        }
+
+        const exhausted = operation.attempts >= operation.max_attempts;
+
+        operation.status = exhausted ? 'failed' : 'pending';
+        operation.next_attempt_at = exhausted
+            ? operation.next_attempt_at
+            : new Date(this.currentTime().getTime() + Math.max(0, delayMs));
+        operation.locked_by = null;
+        operation.locked_at = null;
+        operation.last_error = error && error.message ? error.message : String(error);
+        operation.completed_at = exhausted ? this.currentTime() : null;
+        operation.updated_at = this.currentTime();
+        return cloneOperation(operation);
+    }
+
+    async markOperationCompleted({ id, workerId, result = null }) {
+        const operation = this.operations.get(id);
+
+        if (!operation || operation.status !== 'processing' || operation.locked_by !== workerId) {
+            return null;
+        }
+
+        operation.status = 'completed';
+        operation.result = result ? { ...result } : null;
+        operation.locked_by = null;
+        operation.locked_at = null;
+        operation.last_error = null;
+        operation.completed_at = this.currentTime();
+        operation.updated_at = this.currentTime();
+        return cloneOperation(operation);
+    }
+
+    async markOperationFailed({ id, workerId, error }) {
+        const operation = this.operations.get(id);
+
+        if (!operation || operation.status !== 'processing' || operation.locked_by !== workerId) {
+            return null;
+        }
+
+        operation.status = 'failed';
+        operation.locked_by = null;
+        operation.locked_at = null;
+        operation.last_error = error && error.message ? error.message : String(error);
+        operation.completed_at = this.currentTime();
+        operation.updated_at = this.currentTime();
+        return cloneOperation(operation);
+    }
+
     async withTransaction(work) {
         const run = this.queue.then(async () => {
             const reservationsSnapshot = new Map(
@@ -160,12 +408,21 @@ class FakeReservationRepository {
             const sessionsSnapshot = new Map(
                 [...this.sessions.entries()].map(([key, value]) => [key, { ...value }])
             );
+            const transaction = new FakeTransaction(this);
+            this.transaction = transaction;
 
             try {
-                return await work(this.transaction);
+                const result = await work(transaction);
+                transaction.operationChanges = [];
+                return result;
             } catch (error) {
                 this.reservations = reservationsSnapshot;
                 this.sessions = sessionsSnapshot;
+
+                for (const change of [...transaction.operationChanges].reverse()) {
+                    this.operations.set(change.id, change.previous);
+                }
+
                 this.transaction = new FakeTransaction(this);
                 throw error;
             }

@@ -30,7 +30,8 @@ function createTestContext(options = {}) {
 
     const app = createApp({
         reservationService,
-        logger: silentLogger
+        logger: silentLogger,
+        internalApiToken: options.internalApiToken || null
     });
 
     return {

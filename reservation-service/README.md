@@ -10,11 +10,13 @@ El Reservation Service administra:
 - El registro de entradas y salidas de vehículos.
 - Las sesiones de estacionamiento asociadas a una reserva.
 - La coordinación HTTP con Parking Service para reservar, ocupar y liberar plazas.
+- La reconciliación persistente de operaciones interrumpidas por fallos o reinicios.
 
 El servicio es propietario del esquema `reservations` de Supabase PostgreSQL:
 
 - `reservations.reservations`
 - `reservations.parking_sessions`
+- `reservations.reconciliation_operations`
 
 No modifica directamente las tablas de `parking` ni de `payments`. No calcula tarifas, no determina `amountMinor` y no registra pagos. Después de una salida, el frontend puede solicitar la cotización a Payment Service usando el `sessionId`.
 
@@ -46,7 +48,8 @@ API Gateway (Node.js + Express)
 ```text
 reservation-service/
 ├── migrations/
-│   └── 001_init.sql
+│   ├── 001_init.sql
+│   └── 002_reconciliation_operations.sql
 ├── src/
 │   ├── app.js
 │   ├── config.js
@@ -61,6 +64,7 @@ reservation-service/
 │   │   └── validation.js
 │   ├── middleware/
 │   │   ├── common.js
+│   │   ├── internal-auth.js
 │   │   └── request-context.js
 │   ├── repositories/
 │   │   └── reservation-repository.js
@@ -68,11 +72,14 @@ reservation-service/
 │   │   ├── reservations.routes.js
 │   │   └── sessions.routes.js
 │   └── services/
+│       ├── reconciliation-service.js
 │       └── reservation-service.js
 └── test/
     ├── helpers/
+    ├── auth.test.js
     ├── external-errors.test.js
     ├── parking-client.test.js
+    ├── reconciliation.test.js
     ├── reservations.test.js
     └── sessions.test.js
 ```
@@ -102,8 +109,15 @@ Copia `reservation-service/.env.example` como `reservation-service/.env` y compl
 | `PARKING_SERVICE_URL` | No | `http://localhost:3001` | URL interna de Parking Service. |
 | `PARKING_SERVICE_TIMEOUT_MS` | No | `3000` | Tiempo máximo de espera por llamada a Parking Service. |
 | `BODY_LIMIT` | No | `100kb` | Límite del cuerpo JSON aceptado. |
+| `INTERNAL_API_TOKEN` | Compose: sí / local: opcional | — | Token compartido con Gateway y Parking Service. Si no se configura, la autenticación interna queda deshabilitada. |
+| `RECONCILIATION_WORKER_ENABLED` | No | `true` | Inicia el worker periódico de reconciliación. |
+| `RECONCILIATION_POLL_INTERVAL_MS` | No | `2000` | Intervalo de sondeo cuando no hay operaciones pendientes. |
+| `RECONCILIATION_LEASE_SECONDS` | No | `60` | Tiempo tras el cual una operación `processing` se considera abandonada. |
+| `RECONCILIATION_RETRY_BASE_MS` | No | `1000` | Base del backoff exponencial. |
+| `RECONCILIATION_RETRY_MAX_MS` | No | `60000` | Límite máximo del backoff. |
+| `RECONCILIATION_MAX_ATTEMPTS` | No | `10` | Intentos máximos por operación, incluido el intento síncrono. |
 
-No agregues credenciales reales al repositorio. El archivo `.env` está ignorado por Git.
+No agregues credenciales reales al repositorio. El archivo `.env` está ignorado por Git. En Compose, `INTERNAL_API_TOKEN` debe ser el mismo para Gateway, Parking Service y Reservation Service.
 
 ## Configuración de Supabase
 
@@ -122,6 +136,7 @@ Ejecuta las migraciones antes de iniciar los servicios. Puedes usar el editor SQ
 ```bash
 psql "$DATABASE_URL" -f parking-service/migrations/001_reservation_coordination.sql
 psql "$DATABASE_URL" -f reservation-service/migrations/001_init.sql
+psql "$DATABASE_URL" -f reservation-service/migrations/002_reconciliation_operations.sql
 ```
 
 En PowerShell:
@@ -129,6 +144,7 @@ En PowerShell:
 ```powershell
 psql $env:DATABASE_URL -f parking-service/migrations/001_reservation_coordination.sql
 psql $env:DATABASE_URL -f reservation-service/migrations/001_init.sql
+psql $env:DATABASE_URL -f reservation-service/migrations/002_reconciliation_operations.sql
 ```
 
 La migración de Parking Service agrega de forma idempotente:
@@ -146,7 +162,15 @@ La migración del Reservation Service crea:
 - Índice único parcial que impide más de una reserva `confirmed` por plaza.
 - Índice único parcial que impide más de una sesión `active` por reserva.
 
-Las migraciones no se ejecutan automáticamente al iniciar el servicio.
+La migración `002_reconciliation_operations.sql` crea la bitácora persistente de reconciliación:
+
+- Tabla `reservations.reconciliation_operations`.
+- Estados `pending`, `processing`, `completed` y `failed`.
+- Intentos, backoff, lease, bloqueo por worker y último error.
+- Índice único parcial para impedir dos operaciones abiertas del mismo tipo sobre el mismo recurso.
+- Índice de claim para seleccionar trabajo con `FOR UPDATE SKIP LOCKED`.
+
+Las migraciones no se ejecutan automáticamente al iniciar el servicio. No las apliques sobre una base real sin autorización.
 
 ## Inicio del servicio
 
@@ -199,12 +223,16 @@ Cobertura funcional actual:
 - Estructura uniforme de errores y propagación de `requestId`.
 - Reservas concurrentes sobre la misma plaza.
 - Compensación ante fallos parciales locales y externos.
+- Recuperación de reservas, entradas y salidas interrumpidas antes del commit local.
+- Reintentos con backoff y descarte de operaciones no recuperables.
+- Autenticación interna y exclusión del health check.
+- Envío del token interno desde Reservation Service hacia Parking Service.
 
-Resultado de la última ejecución local: **38 pruebas aprobadas, 0 fallidas**. Estas pruebas no sustituyen una prueba de integración contra Supabase y los servicios reales.
+Resultado de la última ejecución local: **45 pruebas aprobadas, 0 fallidas**. Estas pruebas no sustituyen una prueba de integración contra Supabase y los servicios reales.
 
 ## Endpoints
 
-Todas las rutas internas se exponen sin el prefijo `/v1`.
+Todas las rutas internas se exponen sin el prefijo `/v1`. `GET /health` es público; si `INTERNAL_API_TOKEN` está configurado, el resto de rutas exige `x-internal-token` y responde `401 UNAUTHORIZED` cuando falta o no coincide.
 
 | Método | Ruta interna | Ruta pública mediante Gateway | Propósito | Éxitos | Errores habituales |
 |---|---|---|---|---|---|
@@ -439,6 +467,8 @@ Los cuerpos de las operaciones de transición son:
 
 Parking Service devuelve `{ "data": { ... } }` con `id`, `code`, `level`, `spaceType`, `status` y `reservedByReservationId`. La ruta heredada `GET /spaces` se conserva con su formato anterior para no romper consumidores existentes.
 
+Si `INTERNAL_API_TOKEN` está configurado, Reservation Service envía `x-internal-token` en todas las llamadas. Parking Service valida el mismo token y deja público únicamente `/health`. El API Gateway elimina cualquier token enviado por el cliente y lo inyecta desde su propia configuración.
+
 ### Atomicidad en Parking Service
 
 Las transiciones se ejecutan con `UPDATE ... WHERE` condicional, verificación de estado y propietario (`reserved_by_reservation_id`) y `RETURNING` en una sola sentencia. Esto hace que la coordinación de una plaza sea atómica dentro de PostgreSQL, incluso si dos reservas intentan tomarla al mismo tiempo.
@@ -447,44 +477,80 @@ La ruta de reserva solo acepta plazas en `available`. Si dos solicitudes compite
 
 ## Concurrencia, fallos parciales y recuperación
 
+### Bitácora persistente
+
+Antes de cada llamada externa se registra una fila en `reservations.reconciliation_operations` con estado `processing`, un lease y un propietario. La operación se completa dentro de la misma transacción local que confirma el cambio de reserva o sesión. Si el proceso falla antes del commit, la operación queda abierta y el worker la retoma cuando vence el lease.
+
+Tipos de operación:
+
+- `reserve_space`: reserva externa y creación local de la reserva.
+- `cancel_reservation`: liberación externa y cambio local a `cancelled`.
+- `occupy_space`: ocupación externa y creación local de la sesión.
+- `checkout_space`: liberación externa y cierre local de sesión y reserva.
+- `release_space`: compensación de una reserva creada localmente que falló.
+- `restore_space`: compensación de una entrada que falló después de ocupar la plaza.
+
+Cada operación guarda `payload`, `attempts`, `max_attempts`, `next_attempt_at`, `locked_by`, `locked_at`, `last_error` y `result`. Un índice único parcial impide dos operaciones abiertas del mismo tipo sobre el mismo recurso.
+
+### Worker de reconciliación
+
+El worker se inicia con el servicio salvo que `RECONCILIATION_WORKER_ENABLED=false`. Su ciclo es:
+
+1. Reclama una operación con `FOR UPDATE SKIP LOCKED`.
+2. La marca como `processing` con un lease.
+3. Consulta el estado real local y externo antes de actuar.
+4. Completa la operación o aplica la transición pendiente.
+5. Si el error es transitorio, reprograma con backoff exponencial.
+6. Si el error es de negocio o se agotan los intentos, la marca como `failed`.
+
+Las operaciones `processing` con lease vencido se consideran abandonadas por un proceso caído y pueden ser reclamadas por otro worker. Los workers no comparten memoria; la coordinación se realiza en PostgreSQL.
+
 ### Creación de reserva
 
 1. Se consulta la plaza en Parking Service.
-2. Se reserva la plaza de forma atómica con el UUID de la reserva.
-3. Se inserta la reserva local.
-4. Si la inserción local falla, se intenta liberar la plaza con el mismo `reservationId`.
+2. Se registra `reserve_space`.
+3. Se reserva la plaza de forma atómica con el UUID de la reserva.
+4. Se inserta la reserva local y se completa la operación en la misma transacción.
+5. Si la inserción local falla, se registra `release_space` y se libera la plaza.
 
-El índice único parcial `reservations_one_confirmed_per_space_idx` refuerza la regla de una reserva confirmada por plaza.
+Si el proceso cae después de reservar la plaza pero antes del commit local, el worker ve la plaza reservada por el mismo `reservationId` y crea la reserva local con el `payload`. Si falla la creación local de forma definitiva, la compensación libera la plaza. El índice único parcial `reservations_one_confirmed_per_space_idx` refuerza la regla de una reserva confirmada por plaza.
 
 ### Cancelación
 
 1. Se bloquea la reserva local con `SELECT ... FOR UPDATE`.
 2. Se verifica que no exista una sesión activa.
-3. Se libera la plaza en Parking Service.
-4. Se actualiza la reserva a `cancelled` y se confirma la transacción.
+3. Se registra `cancel_reservation`.
+4. Se libera la plaza en Parking Service.
+5. Se actualiza la reserva a `cancelled` y se completa la operación en la misma transacción.
 
-La liberación externa ocurre antes de confirmar la actualización local. Si la actualización local falla, la reserva permanece `confirmed` y la plaza queda disponible; reintentar la cancelación es seguro porque la liberación es idempotente.
+Si el proceso cae después de liberar la plaza, el worker vuelve a verificar el estado, libera de forma idempotente si hace falta y confirma la cancelación local.
 
 ### Entrada
 
-1. Se bloquea la reserva local.
-2. Se verifica que no exista una sesión activa.
+1. Se bloquea la reserva local y se verifica que no exista una sesión activa.
+2. Se registra `occupy_space` con el `sessionId` y `entryAt`.
 3. Se pasa la plaza a `occupied` en Parking Service.
-4. Se inserta la sesión local y se confirma.
+4. Se inserta la sesión local y se completa la operación en la misma transacción.
 
-Si la inserción o el commit local fallan después de ocupar la plaza, se intenta devolver la plaza a `reserved` mediante `/spaces/:id/restore`. La restricción única parcial impide sesiones activas duplicadas.
+Si la inserción o el commit local fallan después de ocupar la plaza, se registra `restore_space` y se devuelve la plaza a `reserved`. Si la restauración falla, el worker la reintenta. Si el proceso cae después de ocupar la plaza, el worker crea la sesión faltante con el `payload` y completa la operación. La restricción única parcial impide sesiones activas duplicadas.
 
 ### Salida
 
 1. Se bloquean la reserva y la sesión en un orden de bloqueo consistente.
-2. Se libera la plaza en Parking Service.
-3. Se completa la sesión y la reserva en la transacción local.
+2. Se calcula `exitAt` y `durationSeconds`.
+3. Se registra `checkout_space`.
+4. Se libera la plaza en Parking Service.
+5. Se completa la sesión y la reserva, y se cierra la operación en la misma transacción.
 
-Si la actualización local falla después de liberar la plaza, la sesión permanece `active`, la plaza queda `available` y la reserva sigue `confirmed`. Reintentar la salida es seguro porque la liberación es idempotente. No se devuelve un cierre exitoso si Parking Service no pudo liberar la plaza.
+Si el proceso cae después de liberar la plaza, el worker completa localmente la sesión y la reserva usando `exitAt` y `durationSeconds` del `payload`. No se devuelve un cierre exitoso si Parking Service no pudo liberar la plaza.
 
-### Respuestas inciertas
+### Respuestas inciertas y reintentos
 
-Si una operación de Parking Service falla por timeout, error de red o respuesta inválida, el servicio consulta el estado real de la plaza antes de reintentar. Solo repite operaciones que son idempotentes y cuando el estado observado lo justifica.
+Si una operación de Parking Service falla por timeout, error de red o respuesta inválida, el servicio consulta el estado real de la plaza antes de reintentar. Si no puede confirmar el resultado, deja la operación para el worker y responde `503` o `504`. El worker vuelve a consultar el estado antes de repetir una transición.
+
+Los errores de negocio (`404`, `409`) y los estados locales incompatibles no se reintentan indefinidamente: se marcan como `failed` con `last_error`. Los errores transitorios usan backoff exponencial hasta `RECONCILIATION_MAX_ATTEMPTS`.
+
+Si el worker completa una operación antes de que el cliente reintente, la API puede responder `409` por estado ya avanzado; el estado local y externo permanece consistente.
 
 ### Límite de consistencia distribuida
 
@@ -493,14 +559,16 @@ No existe una transacción distribuida entre Reservation Service y Parking Servi
 - Transiciones atómicas en Parking Service.
 - Restricciones únicas locales.
 - Bloqueos de fila.
+- Bitácora persistente de operaciones.
+- Leases, claims con `SKIP LOCKED` y recuperación tras reinicios.
 - Compensaciones explícitas.
-- Reintentos idempotentes y verificación de estado.
+- Reintentos idempotentes con verificación de estado.
 
-Quedan ventanas residuales si un proceso se cae entre una llamada HTTP y el commit local. En esos casos el estado puede requerir reconciliación manual o un proceso de reconciliación periódico. Este proceso no está implementado en esta entrega.
+Puede existir una ventana breve en la que Reservation Service responda error y el worker complete la operación después. La reconciliación garantiza convergencia eventual, no atomicidad distribuida.
 
 ## Integración con el API Gateway
 
-El Gateway actual ya enruta `/api/reservations` hacia Reservation Service. Se verificó localmente la traducción de rutas:
+El Gateway enruta `/api/reservations` hacia Reservation Service. Se verificó localmente la traducción de rutas:
 
 | Ruta pública | Ruta recibida por Reservation Service |
 |---|---|
@@ -511,32 +579,36 @@ El Gateway actual ya enruta `/api/reservations` hacia Reservation Service. Se ve
 | `/api/reservations/sessions/:sessionId/exit` | `/sessions/:sessionId/exit` |
 | `/api/reservations/sessions/:sessionId` | `/sessions/:sessionId` |
 
-Por lo tanto, no fue necesario modificar el Gateway. Las rutas públicas de sesiones incluyen el segmento `sessions`, y las rutas internas comienzan por `/sessions`, por lo que la traducción es directa.
+Las rutas públicas de sesiones incluyen el segmento `sessions`, y las rutas internas comienzan por `/sessions`, por lo que la traducción es directa.
+
+Para llamadas internas entre servicios, el Gateway inyecta `x-internal-token` desde `INTERNAL_API_TOKEN` y elimina cualquier token recibido del cliente. Reservation Service envía el mismo token a Parking Service.
 
 ## Podman Compose
 
-El archivo `docker-compose.yml` de la raíz está actualmente vacío y el repositorio no incluye Dockerfiles para los servicios. Por eso no hay una configuración funcional de Podman Compose que ejecutar todavía.
+Se agregó un `docker-compose.yml` funcional en la raíz con:
 
-Mientras esa infraestructura no exista, ejecuta Parking Service y Reservation Service con Node.js:
+- `api-gateway` expuesto al host (`${API_GATEWAY_PORT:-3000}`).
+- `parking-service`, `reservation-service` y `payment-service` solo en la red interna `parqueo-internal`.
+- Healthchecks por servicio y `depends_on` con condición `service_healthy`.
+- Build con los Dockerfiles creados por servicio.
+- Variables sensibles pasadas desde el entorno (`DATABASE_URL`, `INTERNAL_API_TOKEN`).
+
+Requisitos:
+
+- Podman o Docker con Compose.
+- `INTERNAL_API_TOKEN` definido (mismo valor en todos los servicios).
+- `DATABASE_URL` válido para Supabase.
+- Ejecutar las migraciones antes del primer arranque o desde el cliente SQL.
+
+Ejemplo:
 
 ```bash
-cd parking-service
-npm install
-npm start
+cp .env.example .env
+# Editar .env con credenciales reales
+podman compose up --build
 ```
 
-```bash
-cd reservation-service
-npm install
-npm start
-```
-
-Si se agrega Podman Compose, Reservation Service necesita al menos:
-
-- `DATABASE_URL`
-- `PORT`
-- `PARKING_SERVICE_URL` apuntando al nombre del servicio de Parking en la red de Compose
-- `PARKING_SERVICE_TIMEOUT_MS`
+Reservation Service necesita, entre otras variables, `PARKING_SERVICE_URL` apuntando al nombre del servicio (`http://parking-service:3001`), `INTERNAL_API_TOKEN`, `DATABASE_URL` y las variables de reconciliación. El worker de reconciliación se inicia automáticamente salvo que se deshabilite.
 
 ## Seguridad y calidad
 
@@ -547,18 +619,19 @@ Si se agrega Podman Compose, Reservation Service necesita al menos:
 - Respuestas sin trazas, SQL, credenciales ni cadenas de conexión.
 - `requestId` UUID por solicitud, devuelto en encabezado y cuerpo de error.
 - Límite de tamaño del cuerpo JSON.
-- Cierre ordenado del servidor ante `SIGINT` y `SIGTERM`.
+- Cierre ordenado del servidor ante `SIGINT` y `SIGTERM` (incluye detención del worker de reconciliación).
 - Restricciones de base de datos para estados, duración y duplicados.
+- Autenticación interna entre servicios con `x-internal-token` (el Gateway inyecta el token y rechaza tokens provenientes del cliente).
 - Secretos únicamente mediante variables de entorno.
 
 ## Limitaciones conocidas
 
-- No hay transacción distribuida entre microservicios.
-- No existe un job automático de reconciliación para procesos que fallen entre una llamada HTTP y el commit local.
-- Las migraciones deben ejecutarse manualmente.
-- No se implementó autenticación ni autorización dentro del servicio; se asume que el API Gateway o una capa superior las gestiona.
+- No hay transacción distribuida entre microservicios; la reconciliación provee convergencia eventual.
+- Las migraciones deben ejecutarse manualmente. No las apliques sobre una base real sin autorización explícita.
+- La autenticación interna protege rutas de servicio; la autenticación de usuarios finales no está implementada en este entregable.
+- Si no se configura `INTERNAL_API_TOKEN`, la autenticación interna queda deshabilitada (útil solo para pruebas locales).
 - No se implementó endpoint para cancelar una sesión `active`; el estado `cancelled` está previsto en el modelo.
 - `GET /spaces` de Parking Service conserva el formato heredado; las rutas nuevas usan el contrato uniforme.
 - Las pruebas automatizadas usan dobles de prueba y no validan contra una instancia real de Supabase.
 - No se implementó lógica de pagos ni cálculo de tarifas.
-- No se agregó configuración funcional de Podman Compose porque el repositorio no contiene Dockerfiles ni un compose funcional.
+- No hay `psql`, `docker` ni `podman` garantizados en todos los entornos; la validación con contenedores o migraciones reales queda pendiente si no están instalados.

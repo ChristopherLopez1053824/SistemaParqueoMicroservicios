@@ -20,6 +20,33 @@ const SESSION_COLUMNS = `
     updated_at
 `;
 
+const OPERATION_COLUMNS = `
+    id,
+    operation_type,
+    reservation_id,
+    session_id,
+    space_id,
+    request_id,
+    payload,
+    status,
+    attempts,
+    max_attempts,
+    next_attempt_at,
+    locked_by,
+    locked_at,
+    last_error,
+    result,
+    created_at,
+    updated_at,
+    completed_at
+`;
+
+const NULL_UUID = '00000000-0000-0000-0000-000000000000';
+
+function errorMessage(error) {
+    return String(error && error.message ? error.message : error).slice(0, 4000);
+}
+
 class ReservationTransaction {
     constructor(client) {
         this.client = client;
@@ -126,6 +153,23 @@ class ReservationTransaction {
         );
         return result.rows[0] || null;
     }
+
+    async completeOperation({ id, result = null }) {
+        const operation = await this.client.query(
+            `UPDATE reservations.reconciliation_operations
+             SET status = 'completed',
+                 result = $2,
+                 locked_by = NULL,
+                 locked_at = NULL,
+                 last_error = NULL,
+                 completed_at = NOW(),
+                 updated_at = NOW()
+             WHERE id = $1 AND status IN ('pending', 'processing')
+             RETURNING ${OPERATION_COLUMNS}`,
+            [id, result]
+        );
+        return operation.rows[0] || null;
+    }
 }
 
 class ReservationRepository {
@@ -160,6 +204,265 @@ class ReservationRepository {
             [id]
         );
         return result.rows[0] || null;
+    }
+
+    async findOperationById(id) {
+        const result = await this.pool.query(
+            `SELECT ${OPERATION_COLUMNS}
+             FROM reservations.reconciliation_operations
+             WHERE id = $1`,
+            [id]
+        );
+        return result.rows[0] || null;
+    }
+
+    async createOperation({
+        id,
+        operationType,
+        reservationId = null,
+        sessionId = null,
+        spaceId = null,
+        requestId = null,
+        payload = {},
+        owner,
+        maxAttempts = 10,
+        leaseSeconds = 60
+    }) {
+        try {
+            const result = await this.pool.query(
+                `INSERT INTO reservations.reconciliation_operations (
+                     id,
+                     operation_type,
+                     reservation_id,
+                     session_id,
+                     space_id,
+                     request_id,
+                     payload,
+                     status,
+                     attempts,
+                     max_attempts,
+                     locked_by,
+                     locked_at
+                 )
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'processing', 1, $8, $9, NOW())
+                 RETURNING ${OPERATION_COLUMNS}`,
+                [
+                    id,
+                    operationType,
+                    reservationId,
+                    sessionId,
+                    spaceId,
+                    requestId,
+                    payload,
+                    maxAttempts,
+                    owner
+                ]
+            );
+            return result.rows[0];
+        } catch (error) {
+            if (!error || error.code !== '23505') {
+                throw error;
+            }
+
+            const existing = await this.pool.query(
+                `SELECT ${OPERATION_COLUMNS}
+                 FROM reservations.reconciliation_operations
+                 WHERE operation_type = $1
+                   AND COALESCE(reservation_id, '${NULL_UUID}'::uuid) = $2
+                   AND COALESCE(session_id, '${NULL_UUID}'::uuid) = $3
+                   AND status IN ('pending', 'processing')
+                 ORDER BY created_at
+                 LIMIT 1
+                 FOR UPDATE`,
+                [
+                    operationType,
+                    reservationId || NULL_UUID,
+                    sessionId || NULL_UUID
+                ]
+            );
+
+            const operation = existing.rows[0];
+
+            if (!operation) {
+                throw error;
+            }
+
+            const lockedAt = operation.locked_at ? new Date(operation.locked_at).getTime() : 0;
+            const leaseExpired = !lockedAt || (Date.now() - lockedAt) >= leaseSeconds * 1000;
+
+            if (operation.status === 'processing' && !leaseExpired) {
+                const busy = new Error('Ya existe una operación de reconciliación en curso para este recurso.');
+                busy.code = 'RECONCILIATION_OPERATION_BUSY';
+                busy.operationId = operation.id;
+                throw busy;
+            }
+
+            const claimed = await this.pool.query(
+                `UPDATE reservations.reconciliation_operations
+                 SET status = 'processing',
+                     payload = $2,
+                     request_id = $3,
+                     attempts = attempts + 1,
+                     locked_by = $4,
+                     locked_at = NOW(),
+                     last_error = NULL,
+                     completed_at = NULL,
+                     updated_at = NOW()
+                 WHERE id = $1 AND status IN ('pending', 'processing')
+                 RETURNING ${OPERATION_COLUMNS}`,
+                [operation.id, payload, requestId, owner]
+            );
+
+            if (!claimed.rows[0]) {
+                const busy = new Error('La operación de reconciliación fue tomada por otro proceso.');
+                busy.code = 'RECONCILIATION_OPERATION_BUSY';
+                busy.operationId = operation.id;
+                throw busy;
+            }
+
+            return claimed.rows[0];
+        }
+    }
+
+    async completeOperation({ id, result = null }) {
+        const operation = await this.pool.query(
+            `UPDATE reservations.reconciliation_operations
+             SET status = 'completed',
+                 result = $2,
+                 locked_by = NULL,
+                 locked_at = NULL,
+                 last_error = NULL,
+                 completed_at = NOW(),
+                 updated_at = NOW()
+             WHERE id = $1 AND status IN ('pending', 'processing')
+             RETURNING ${OPERATION_COLUMNS}`,
+            [id, result]
+        );
+        return operation.rows[0] || null;
+    }
+
+    async failOperation({ id, owner, error }) {
+        const operation = await this.pool.query(
+            `UPDATE reservations.reconciliation_operations
+             SET status = 'failed',
+                 locked_by = NULL,
+                 locked_at = NULL,
+                 last_error = $3,
+                 completed_at = NOW(),
+                 updated_at = NOW()
+             WHERE id = $1
+               AND (locked_by = $2 OR locked_by IS NULL)
+               AND status IN ('pending', 'processing')
+             RETURNING ${OPERATION_COLUMNS}`,
+            [id, owner, errorMessage(error)]
+        );
+        return operation.rows[0] || null;
+    }
+
+    async deferOperation({ id, owner, error, delayMs = 0 }) {
+        const operation = await this.pool.query(
+            `UPDATE reservations.reconciliation_operations
+             SET status = 'pending',
+                 locked_by = NULL,
+                 locked_at = NULL,
+                 next_attempt_at = NOW() + ($3 * INTERVAL '1 millisecond'),
+                 last_error = $4,
+                 updated_at = NOW()
+             WHERE id = $1 AND locked_by = $2 AND status = 'processing'
+             RETURNING ${OPERATION_COLUMNS}`,
+            [id, owner, Math.max(0, delayMs), errorMessage(error)]
+        );
+        return operation.rows[0] || null;
+    }
+
+    async claimNextOperation({ workerId, leaseSeconds }) {
+        const operation = await this.pool.query(
+            `WITH candidate AS (
+                 SELECT id
+                 FROM reservations.reconciliation_operations
+                 WHERE (status = 'pending' AND next_attempt_at <= NOW())
+                    OR (
+                        status = 'processing'
+                        AND (
+                            locked_at IS NULL
+                            OR locked_at < NOW() - make_interval(secs => $2)
+                        )
+                    )
+                 ORDER BY next_attempt_at, created_at
+                 FOR UPDATE SKIP LOCKED
+                 LIMIT 1
+             )
+             UPDATE reservations.reconciliation_operations AS operation
+             SET status = 'processing',
+                 attempts = operation.attempts + 1,
+                 locked_by = $1,
+                 locked_at = NOW(),
+                 updated_at = NOW()
+             FROM candidate
+             WHERE operation.id = candidate.id
+             RETURNING ${OPERATION_COLUMNS}`,
+            [workerId, leaseSeconds]
+        );
+        return operation.rows[0] || null;
+    }
+
+    async rescheduleOperation({ id, workerId, error, delayMs }) {
+        const operation = await this.pool.query(
+            `UPDATE reservations.reconciliation_operations
+             SET status = CASE
+                     WHEN attempts >= max_attempts THEN 'failed'
+                     ELSE 'pending'
+                 END,
+                 next_attempt_at = CASE
+                     WHEN attempts >= max_attempts THEN next_attempt_at
+                     ELSE NOW() + ($3 * INTERVAL '1 millisecond')
+                 END,
+                 locked_by = NULL,
+                 locked_at = NULL,
+                 last_error = $4,
+                 completed_at = CASE
+                     WHEN attempts >= max_attempts THEN NOW()
+                     ELSE NULL
+                 END,
+                 updated_at = NOW()
+             WHERE id = $1 AND status = 'processing' AND locked_by = $2
+             RETURNING ${OPERATION_COLUMNS}`,
+            [id, workerId, Math.max(0, delayMs), errorMessage(error)]
+        );
+        return operation.rows[0] || null;
+    }
+
+    async markOperationCompleted({ id, workerId, result = null }) {
+        const operation = await this.pool.query(
+            `UPDATE reservations.reconciliation_operations
+             SET status = 'completed',
+                 result = $3,
+                 locked_by = NULL,
+                 locked_at = NULL,
+                 last_error = NULL,
+                 completed_at = NOW(),
+                 updated_at = NOW()
+             WHERE id = $1 AND status = 'processing' AND locked_by = $2
+             RETURNING ${OPERATION_COLUMNS}`,
+            [id, workerId, result]
+        );
+        return operation.rows[0] || null;
+    }
+
+    async markOperationFailed({ id, workerId, error }) {
+        const operation = await this.pool.query(
+            `UPDATE reservations.reconciliation_operations
+             SET status = 'failed',
+                 locked_by = NULL,
+                 locked_at = NULL,
+                 last_error = $3,
+                 completed_at = NOW(),
+                 updated_at = NOW()
+             WHERE id = $1 AND status = 'processing' AND locked_by = $2
+             RETURNING ${OPERATION_COLUMNS}`,
+            [id, workerId, errorMessage(error)]
+        );
+        return operation.rows[0] || null;
     }
 
     async withTransaction(work) {

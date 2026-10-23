@@ -17,6 +17,25 @@ function baseUrl(server) {
     return `http://127.0.0.1:${server.address().port}`;
 }
 
+test('envía el token interno a Parking Service', async (t) => {
+    let receivedToken = null;
+    const server = await startParkingServer((req, res) => {
+        receivedToken = req.headers['x-internal-token'];
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ data: { status: 'available' } }));
+    });
+    t.after(() => stopParkingServer(server));
+
+    const client = new ParkingClient({
+        baseUrl: baseUrl(server),
+        timeoutMs: 1000,
+        internalApiToken: 'token-de-prueba'
+    });
+    await client.getSpace('11111111-1111-4111-8111-111111111111');
+
+    assert.equal(receivedToken, 'token-de-prueba');
+});
+
 test('interpreta una respuesta válida de Parking Service', async (t) => {
     const server = await startParkingServer((req, res) => {
         res.writeHead(200, { 'content-type': 'application/json' });

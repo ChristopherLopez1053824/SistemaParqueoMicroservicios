@@ -1,0 +1,101 @@
+services:
+  api-gateway:
+    build:
+      context: ./api-gateway
+    restart: unless-stopped
+    ports:
+      - "${API_GATEWAY_PORT:-3000}:3000"
+    environment:
+      PORT: "3000"
+      PARKING_SERVICE_URL: http://parking-service:3001
+      RESERVATION_SERVICE_URL: http://reservation-service:3002
+      PAYMENT_SERVICE_URL: http://payment-service:3003
+      INTERNAL_API_TOKEN: "${INTERNAL_API_TOKEN:?Define INTERNAL_API_TOKEN}"
+    depends_on:
+      parking-service:
+        condition: service_healthy
+      reservation-service:
+        condition: service_healthy
+      payment-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - parqueo-internal
+
+  parking-service:
+    build:
+      context: ./parking-service
+    restart: unless-stopped
+    environment:
+      PORT: "3001"
+      DATABASE_URL: "${DATABASE_URL:?Define DATABASE_URL}"
+      INTERNAL_API_TOKEN: "${INTERNAL_API_TOKEN:?Define INTERNAL_API_TOKEN}"
+    expose:
+      - "3001"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - parqueo-internal
+
+  reservation-service:
+    build:
+      context: ./reservation-service
+    restart: unless-stopped
+    environment:
+      PORT: "3002"
+      DATABASE_URL: "${DATABASE_URL:?Define DATABASE_URL}"
+      PARKING_SERVICE_URL: http://parking-service:3001
+      PARKING_SERVICE_TIMEOUT_MS: "3000"
+      INTERNAL_API_TOKEN: "${INTERNAL_API_TOKEN:?Define INTERNAL_API_TOKEN}"
+      RECONCILIATION_WORKER_ENABLED: "${RECONCILIATION_WORKER_ENABLED:-true}"
+      RECONCILIATION_POLL_INTERVAL_MS: "${RECONCILIATION_POLL_INTERVAL_MS:-2000}"
+      RECONCILIATION_LEASE_SECONDS: "${RECONCILIATION_LEASE_SECONDS:-60}"
+      RECONCILIATION_RETRY_BASE_MS: "${RECONCILIATION_RETRY_BASE_MS:-1000}"
+      RECONCILIATION_RETRY_MAX_MS: "${RECONCILIATION_RETRY_MAX_MS:-60000}"
+      RECONCILIATION_MAX_ATTEMPTS: "${RECONCILIATION_MAX_ATTEMPTS:-10}"
+    expose:
+      - "3002"
+    depends_on:
+      parking-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3002/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    stop_grace_period: 15s
+    networks:
+      - parqueo-internal
+
+  payment-service:
+    build:
+      context: ./payment-service
+    restart: unless-stopped
+    environment:
+      PORT: "3003"
+      DATABASE_URL: "${DATABASE_URL:?Define DATABASE_URL}"
+      INTERNAL_API_TOKEN: "${INTERNAL_API_TOKEN:?Define INTERNAL_API_TOKEN}"
+    expose:
+      - "3003"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3003/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - parqueo-internal
+
+networks:
+  parqueo-internal:
+    driver: bridge

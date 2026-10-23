@@ -1,4 +1,7 @@
+require('dotenv').config();
+
 const express = require('express');
+const { createInternalAuth } = require('./middleware/internal-auth');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -11,6 +14,8 @@ app.get('/health', (req, res) => {
         status: 'ok'
     });
 });
+
+app.use(createInternalAuth(process.env.INTERNAL_API_TOKEN));
 
 app.use('/', require('./routes/parking.routes'));
 

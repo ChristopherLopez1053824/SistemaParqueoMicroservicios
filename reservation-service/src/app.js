@@ -1,10 +1,16 @@
 const express = require('express');
 const { requestContext } = require('./middleware/request-context');
 const { notFoundHandler, createErrorHandler } = require('./middleware/common');
+const { createInternalAuth } = require('./middleware/internal-auth');
 const { createReservationsRouter } = require('./routes/reservations.routes');
 const { createSessionsRouter } = require('./routes/sessions.routes');
 
-function createApp({ reservationService, logger = console, bodyLimit = '100kb' }) {
+function createApp({
+    reservationService,
+    logger = console,
+    bodyLimit = '100kb',
+    internalApiToken = null
+}) {
     const app = express();
 
     app.disable('x-powered-by');
@@ -17,6 +23,8 @@ function createApp({ reservationService, logger = console, bodyLimit = '100kb' }
             status: 'ok'
         });
     });
+
+    app.use(createInternalAuth(internalApiToken));
 
     app.use('/reservations', createReservationsRouter(reservationService));
     app.use('/sessions', createSessionsRouter(reservationService));

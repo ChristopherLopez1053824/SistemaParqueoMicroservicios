@@ -16,12 +16,106 @@ function isUncertain(error) {
 }
 
 class ReservationService {
-    constructor({ repository, parkingClient, logger = console, now = () => new Date(), generateId = randomUUID }) {
+    constructor({
+        repository,
+        parkingClient,
+        logger = console,
+        now = () => new Date(),
+        generateId = randomUUID,
+        operationOwnerId = `api:${process.pid}:${randomUUID()}`,
+        reconciliationMaxAttempts = 10,
+        reconciliationRetryBaseMs = 1000
+    }) {
         this.repository = repository;
         this.parkingClient = parkingClient;
         this.logger = logger;
         this.now = now;
         this.generateId = generateId;
+        this.operationOwnerId = operationOwnerId;
+        this.reconciliationMaxAttempts = reconciliationMaxAttempts;
+        this.reconciliationRetryBaseMs = reconciliationRetryBaseMs;
+    }
+
+    async _startOperation({
+        operationType,
+        reservationId = null,
+        sessionId = null,
+        spaceId = null,
+        requestId = null,
+        payload = {}
+    }) {
+        try {
+            return await this.repository.createOperation({
+                id: this.generateId(),
+                operationType,
+                reservationId,
+                sessionId,
+                spaceId,
+                requestId,
+                payload,
+                owner: this.operationOwnerId,
+                maxAttempts: this.reconciliationMaxAttempts
+            });
+        } catch (error) {
+            if (error && error.code === 'RECONCILIATION_OPERATION_BUSY') {
+                throw conflict(
+                    ERROR_CODES.RECONCILIATION_IN_PROGRESS,
+                    'Ya existe una operación en curso para este recurso. Intenta nuevamente en unos segundos.'
+                );
+            }
+            throw error;
+        }
+    }
+
+    async _failOperation(operationId, error) {
+        if (!operationId) {
+            return;
+        }
+
+        try {
+            await this.repository.failOperation({
+                id: operationId,
+                owner: this.operationOwnerId,
+                error
+            });
+        } catch (operationError) {
+            this.logger.error(
+                `No se pudo marcar como fallida la operación ${operationId}: ${operationError.message}`
+            );
+        }
+    }
+
+    async _deferOperation(operationId, error, delayMs = this.reconciliationRetryBaseMs) {
+        if (!operationId) {
+            return;
+        }
+
+        try {
+            await this.repository.deferOperation({
+                id: operationId,
+                owner: this.operationOwnerId,
+                error,
+                delayMs
+            });
+        } catch (operationError) {
+            this.logger.error(
+                `No se pudo reprogramar la operación ${operationId}: ${operationError.message}`
+            );
+        }
+    }
+
+    async _completeStandaloneOperation(operationId, result = null) {
+        if (!operationId) {
+            return;
+        }
+
+        try {
+            await this.repository.completeOperation({ id: operationId, result });
+        } catch (error) {
+            this.logger.error(
+                `No se pudo completar la operación ${operationId}: ${error.message}`
+            );
+        }
     }
 
     _mapParkingError(error, { notFoundMessage, conflictCode, conflictMessage }) {
@@ -172,10 +266,24 @@ class ReservationService {
         }
 
         const reservationId = this.generateId();
+        const operation = await this._startOperation({
+            operationType: 'reserve_space',
+            reservationId,
+            spaceId,
+            requestId,
+            payload: { reservationId, spaceId, vehiclePlate }
+        });
+        const operationId = operation.id;
 
         try {
             await this._reserveSpace(spaceId, reservationId, requestId);
         } catch (error) {
+            if (isUncertain(error)) {
+                await this._deferOperation(operationId, error);
+            } else {
+                await this._failOperation(operationId, error);
+            }
+
             throw this._mapParkingError(error, {
                 notFoundMessage: 'La plaza indicada no existe.',
                 conflictCode: ERROR_CODES.SPACE_NOT_AVAILABLE,
@@ -184,16 +292,48 @@ class ReservationService {
         }
 
         try {
-            const row = await this.repository.withTransaction((transaction) => transaction.insertReservation({
-                id: reservationId,
-                spaceId,
-                vehiclePlate
-            }));
+            const row = await this.repository.withTransaction(async (transaction) => {
+                const inserted = await transaction.insertReservation({
+                    id: reservationId,
+                    spaceId,
+                    vehiclePlate
+                });
+
+                await transaction.completeOperation({
+                    id: operationId,
+                    result: { status: 'confirmed' }
+                });
+
+                return inserted;
+            });
             return serializeReservation(row);
         } catch (error) {
+            await this._failOperation(operationId, error);
+
+            let releaseOperationId = null;
+            try {
+                const releaseOperation = await this._startOperation({
+                    operationType: 'release_space',
+                    reservationId,
+                    spaceId,
+                    requestId,
+                    payload: { purpose: 'reservation-creation-compensation' }
+                });
+                releaseOperationId = releaseOperation.id;
+            } catch (operationError) {
+                this.logger.error(
+                    `[${requestId}] No se pudo registrar la compensación de la plaza ${spaceId}: ${operationError.message}`
+                );
+            }
+
             try {
                 await this._releaseReservedSpace(spaceId, reservationId, requestId);
+                await this._completeStandaloneOperation(releaseOperationId);
             } catch (compensationError) {
+                if (releaseOperationId) {
+                    await this._deferOperation(releaseOperationId, compensationError);
+                }
+
                 this.logger.error(
                     `[${requestId}] No se pudo liberar la plaza ${spaceId} después de fallar la creación de la reserva ${reservationId}: ${compensationError.message}`
                 );
@@ -234,54 +374,87 @@ class ReservationService {
     async cancelReservation(id, { requestId }) {
         assertUuid(id, 'id');
 
-        return this.repository.withTransaction(async (transaction) => {
-            const reservation = await transaction.lockReservation(id);
+        let operationId = null;
+        let handled = false;
 
-            if (!reservation) {
-                throw notFound('La reserva solicitada no existe.');
-            }
+        try {
+            return await this.repository.withTransaction(async (transaction) => {
+                const reservation = await transaction.lockReservation(id);
 
-            if (reservation.status !== 'confirmed') {
-                throw conflict(
-                    ERROR_CODES.INVALID_STATE_TRANSITION,
-                    `La reserva no puede cancelarse porque su estado actual es ${reservation.status}.`
-                );
-            }
+                if (!reservation) {
+                    throw notFound('La reserva solicitada no existe.');
+                }
 
-            const activeSession = await transaction.findActiveSessionByReservationId(id);
+                if (reservation.status !== 'confirmed') {
+                    throw conflict(
+                        ERROR_CODES.INVALID_STATE_TRANSITION,
+                        `La reserva no puede cancelarse porque su estado actual es ${reservation.status}.`
+                    );
+                }
 
-            if (activeSession) {
-                throw conflict(
-                    ERROR_CODES.RESERVATION_CONFLICT,
-                    'La reserva tiene una sesión activa y no puede cancelarse de forma segura.'
-                );
-            }
+                const activeSession = await transaction.findActiveSessionByReservationId(id);
 
-            try {
-                await this._releaseReservedSpace(reservation.space_id, id, requestId);
-            } catch (error) {
-                throw this._mapParkingError(error, {
-                    conflictCode: ERROR_CODES.INVALID_STATE_TRANSITION,
-                    conflictMessage: 'La plaza no puede liberarse porque no está reservada por esta reserva.'
+                if (activeSession) {
+                    throw conflict(
+                        ERROR_CODES.RESERVATION_CONFLICT,
+                        'La reserva tiene una sesión activa y no puede cancelarse de forma segura.'
+                    );
+                }
+
+                const operation = await this._startOperation({
+                    operationType: 'cancel_reservation',
+                    reservationId: id,
+                    spaceId: reservation.space_id,
+                    requestId,
+                    payload: { reservationId: id }
                 });
+                operationId = operation.id;
+
+                try {
+                    await this._releaseReservedSpace(reservation.space_id, id, requestId);
+                } catch (error) {
+                    if (isUncertain(error)) {
+                        await this._deferOperation(operationId, error);
+                    } else {
+                        await this._failOperation(operationId, error);
+                    }
+                    handled = true;
+
+                    throw this._mapParkingError(error, {
+                        conflictCode: ERROR_CODES.INVALID_STATE_TRANSITION,
+                        conflictMessage: 'La plaza no puede liberarse porque no está reservada por esta reserva.'
+                    });
+                }
+
+                const updated = await transaction.updateReservationStatus(id, ['confirmed'], 'cancelled');
+
+                if (!updated) {
+                    throw conflict(
+                        ERROR_CODES.INVALID_STATE_TRANSITION,
+                        'La reserva cambió de estado durante la operación.'
+                    );
+                }
+
+                await transaction.completeOperation({
+                    id: operationId,
+                    result: { status: 'cancelled' }
+                });
+
+                return serializeReservation(updated);
+            });
+        } catch (error) {
+            if (operationId && !handled) {
+                await this._deferOperation(operationId, error);
             }
-
-            const updated = await transaction.updateReservationStatus(id, ['confirmed'], 'cancelled');
-
-            if (!updated) {
-                throw conflict(
-                    ERROR_CODES.INVALID_STATE_TRANSITION,
-                    'La reserva cambió de estado durante la operación.'
-                );
-            }
-
-            return serializeReservation(updated);
-        });
+            throw error;
+        }
     }
 
     async registerEntry(reservationId, { requestId }) {
         assertUuid(reservationId, 'reservationId');
 
+        let operationId = null;
+        let handled = false;
         let occupancyApplied = false;
         let spaceId = null;
 
@@ -310,11 +483,35 @@ class ReservationService {
                 }
 
                 spaceId = reservation.space_id;
+                const sessionId = this.generateId();
+                const entryAt = this.now();
+                const operation = await this._startOperation({
+                    operationType: 'occupy_space',
+                    reservationId,
+                    sessionId,
+                    spaceId,
+                    requestId,
+                    payload: {
+                        sessionId,
+                        reservationId,
+                        spaceId,
+                        vehiclePlate: reservation.vehicle_plate,
+                        entryAt: entryAt.toISOString()
+                    }
+                });
+                operationId = operation.id;
 
                 try {
                     await this._occupySpace(spaceId, reservationId, requestId);
                     occupancyApplied = true;
                 } catch (error) {
+                    if (isUncertain(error)) {
+                        await this._deferOperation(operationId, error);
+                    } else {
+                        await this._failOperation(operationId, error);
+                    }
+                    handled = true;
+
                     throw this._mapParkingError(error, {
                         conflictCode: ERROR_CODES.INVALID_STATE_TRANSITION,
                         conflictMessage: 'La plaza no está reservada por esta reserva o no puede pasar a ocupada.'
@@ -324,11 +521,11 @@ class ReservationService {
                 let session;
                 try {
                     session = await transaction.insertSession({
-                        id: this.generateId(),
+                        id: sessionId,
                         reservationId,
                         spaceId,
                         vehiclePlate: reservation.vehicle_plate,
-                        entryAt: this.now()
+                        entryAt
                     });
                 } catch (error) {
                     if (error && error.code === '23505') {
@@ -340,13 +537,41 @@ class ReservationService {
                     throw error;
                 }
 
+                await transaction.completeOperation({
+                    id: operationId,
+                    result: { sessionId, status: 'active' }
+                });
+
                 return serializeSession(session);
             });
         } catch (error) {
-            if (occupancyApplied && spaceId) {
+            if (occupancyApplied && spaceId && operationId) {
+                await this._failOperation(operationId, error);
+
+                let restoreOperationId = null;
+                try {
+                    const restoreOperation = await this._startOperation({
+                        operationType: 'restore_space',
+                        reservationId,
+                        spaceId,
+                        requestId,
+                        payload: { purpose: 'entry-compensation' }
+                    });
+                    restoreOperationId = restoreOperation.id;
+                } catch (operationError) {
+                    this.logger.error(
+                        `[${requestId}] No se pudo registrar la restauración de la plaza ${spaceId}: ${operationError.message}`
+                    );
+                }
+
                 try {
                     await this._restoreOccupiedSpace(spaceId, reservationId, requestId);
+                    await this._completeStandaloneOperation(restoreOperationId);
                 } catch (compensationError) {
+                    if (restoreOperationId) {
+                        await this._deferOperation(restoreOperationId, compensationError);
+                    }
+
                     this.logger.error(
                         `[${requestId}] No se pudo restaurar la plaza ${spaceId} después de fallar la entrada de la reserva ${reservationId}: ${compensationError.message}`
                     );
@@ -355,6 +580,8 @@ class ReservationService {
                         { cause: error }
                     );
                 }
+            } else if (operationId && !handled) {
+                await this._deferOperation(operationId, error);
             }
 
             throw error;
@@ -364,86 +591,128 @@ class ReservationService {
     async registerExit(sessionId, { requestId }) {
         assertUuid(sessionId, 'sessionId');
 
-        return this.repository.withTransaction(async (transaction) => {
-            const snapshot = await transaction.findSessionById(sessionId);
+        let operationId = null;
+        let handled = false;
 
-            if (!snapshot) {
-                throw notFound('La sesión solicitada no existe.');
-            }
+        try {
+            return await this.repository.withTransaction(async (transaction) => {
+                const snapshot = await transaction.findSessionById(sessionId);
 
-            const reservation = await transaction.lockReservation(snapshot.reservation_id);
-            const session = await transaction.lockSession(sessionId);
+                if (!snapshot) {
+                    throw notFound('La sesión solicitada no existe.');
+                }
 
-            if (!session) {
-                throw notFound('La sesión solicitada no existe.');
-            }
+                const reservation = await transaction.lockReservation(snapshot.reservation_id);
+                const session = await transaction.lockSession(sessionId);
 
-            if (session.status === 'completed') {
-                throw conflict(
-                    ERROR_CODES.SESSION_ALREADY_COMPLETED,
-                    'La sesión ya fue finalizada.'
-                );
-            }
+                if (!session) {
+                    throw notFound('La sesión solicitada no existe.');
+                }
 
-            if (session.status !== 'active') {
-                throw conflict(
-                    ERROR_CODES.INVALID_STATE_TRANSITION,
-                    `No se puede finalizar una sesión en estado ${session.status}.`
-                );
-            }
+                if (session.status === 'completed') {
+                    throw conflict(
+                        ERROR_CODES.SESSION_ALREADY_COMPLETED,
+                        'La sesión ya fue finalizada.'
+                    );
+                }
 
-            if (!reservation) {
-                throw conflict(
-                    ERROR_CODES.INVALID_STATE_TRANSITION,
-                    'La reserva asociada a la sesión no existe.'
-                );
-            }
+                if (session.status !== 'active') {
+                    throw conflict(
+                        ERROR_CODES.INVALID_STATE_TRANSITION,
+                        `No se puede finalizar una sesión en estado ${session.status}.`
+                    );
+                }
 
-            if (reservation.status === 'cancelled') {
-                throw conflict(
-                    ERROR_CODES.INVALID_STATE_TRANSITION,
-                    'No se puede finalizar una sesión asociada a una reserva cancelada.'
-                );
-            }
+                if (!reservation) {
+                    throw conflict(
+                        ERROR_CODES.INVALID_STATE_TRANSITION,
+                        'La reserva asociada a la sesión no existe.'
+                    );
+                }
 
-            const exitAt = this.now();
-            const entryTime = new Date(session.entry_at).getTime();
-            const exitTime = exitAt.getTime();
-            const durationSeconds = Math.max(0, Math.floor((exitTime - entryTime) / 1000));
+                if (reservation.status === 'cancelled') {
+                    throw conflict(
+                        ERROR_CODES.INVALID_STATE_TRANSITION,
+                        'No se puede finalizar una sesión asociada a una reserva cancelada.'
+                    );
+                }
 
-            try {
-                await this._checkoutSpace(session.space_id, session.reservation_id, requestId);
-            } catch (error) {
-                throw this._mapParkingError(error, {
-                    conflictCode: ERROR_CODES.INVALID_STATE_TRANSITION,
-                    conflictMessage: 'La plaza no pudo liberarse porque no está ocupada por esta reserva.'
+                const exitAt = this.now();
+                const entryTime = new Date(session.entry_at).getTime();
+                const exitTime = exitAt.getTime();
+                const durationSeconds = Math.max(0, Math.floor((exitTime - entryTime) / 1000));
+
+                const operation = await this._startOperation({
+                    operationType: 'checkout_space',
+                    reservationId: session.reservation_id,
+                    sessionId,
+                    spaceId: session.space_id,
+                    requestId,
+                    payload: {
+                        sessionId,
+                        reservationId: session.reservation_id,
+                        spaceId: session.space_id,
+                        exitAt: exitAt.toISOString(),
+                        durationSeconds
+                    }
                 });
-            }
+                operationId = operation.id;
 
-            const completedSession = await transaction.completeSession({
-                sessionId,
-                exitAt,
-                durationSeconds
+                try {
+                    await this._checkoutSpace(session.space_id, session.reservation_id, requestId);
+                } catch (error) {
+                    if (isUncertain(error)) {
+                        await this._deferOperation(operationId, error);
+                    } else {
+                        await this._failOperation(operationId, error);
+                    }
+                    handled = true;
+
+                    throw this._mapParkingError(error, {
+                        conflictCode: ERROR_CODES.INVALID_STATE_TRANSITION,
+                        conflictMessage: 'La plaza no pudo liberarse porque no está ocupada por esta reserva.'
+                    });
+                }
+
+                const completedSession = await transaction.completeSession({
+                    sessionId,
+                    exitAt,
+                    durationSeconds
+                });
+
+                if (!completedSession) {
+                    throw conflict(
+                        ERROR_CODES.INVALID_STATE_TRANSITION,
+                        'La sesión cambió de estado durante la operación.'
+                    );
+                }
+
+                const completedReservation = await transaction.completeReservation(session.reservation_id);
+
+                if (!completedReservation) {
+                    throw conflict(
+                        ERROR_CODES.INVALID_STATE_TRANSITION,
+                        'No se pudo completar la reserva asociada a la sesión.'
+                    );
+                }
+
+                await transaction.completeOperation({
+                    id: operationId,
+                    result: {
+                        sessionId,
+                        status: 'completed',
+                        durationSeconds
+                    }
+                });
+
+                return serializeSession(completedSession);
             });
-
-            if (!completedSession) {
-                throw conflict(
-                    ERROR_CODES.INVALID_STATE_TRANSITION,
-                    'La sesión cambió de estado durante la operación.'
-                );
+        } catch (error) {
+            if (operationId && !handled) {
+                await this._deferOperation(operationId, error);
             }
-
-            const completedReservation = await transaction.completeReservation(session.reservation_id);
-
-            if (!completedReservation) {
-                throw conflict(
-                    ERROR_CODES.INVALID_STATE_TRANSITION,
-                    'No se pudo completar la reserva asociada a la sesión.'
-                );
-            }
-
-            return serializeSession(completedSession);
-        });
+            throw error;
+        }
     }
 
     async getSession(sessionId) {

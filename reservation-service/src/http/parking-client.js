@@ -20,9 +20,10 @@ function kindFromStatus(status) {
 }
 
 class ParkingClient {
-    constructor({ baseUrl, timeoutMs = 3000 }) {
+    constructor({ baseUrl, timeoutMs = 3000, internalApiToken = null }) {
         this.baseUrl = baseUrl.replace(/\/+$/, '');
         this.timeoutMs = timeoutMs;
+        this.internalApiToken = internalApiToken || null;
     }
 
     async _request(method, path, { body, requestId } = {}) {
@@ -35,7 +36,8 @@ class ParkingClient {
                 headers: {
                     accept: 'application/json',
                     ...(body ? { 'content-type': 'application/json' } : {}),
-                    ...(requestId ? { 'x-request-id': requestId } : {})
+                    ...(requestId ? { 'x-request-id': requestId } : {}),
+                    ...(this.internalApiToken ? { 'x-internal-token': this.internalApiToken } : {})
                 },
                 body: body ? JSON.stringify(body) : undefined,
                 signal: controller.signal

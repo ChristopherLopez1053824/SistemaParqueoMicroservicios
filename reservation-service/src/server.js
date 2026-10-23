@@ -1,20 +1,41 @@
+const os = require('os');
 const config = require('./config');
 const pool = require('./db');
 const { createApp } = require('./app');
 const { ReservationRepository } = require('./repositories/reservation-repository');
 const { ParkingClient } = require('./http/parking-client');
 const { ReservationService } = require('./services/reservation-service');
+const { ReconciliationService } = require('./services/reconciliation-service');
 
+const instanceId = `${os.hostname()}:${process.pid}`;
 const repository = new ReservationRepository(pool);
 const parkingClient = new ParkingClient({
     baseUrl: config.parkingServiceUrl,
-    timeoutMs: config.parkingServiceTimeoutMs
+    timeoutMs: config.parkingServiceTimeoutMs,
+    internalApiToken: config.internalApiToken
 });
-const reservationService = new ReservationService({ repository, parkingClient });
+const reservationService = new ReservationService({
+    repository,
+    parkingClient,
+    operationOwnerId: `${instanceId}:api`,
+    reconciliationMaxAttempts: config.reconciliation.maxAttempts,
+    reconciliationRetryBaseMs: config.reconciliation.retryBaseMs
+});
+const reconciliationService = new ReconciliationService({
+    repository,
+    parkingClient,
+    workerId: `${instanceId}:worker`,
+    pollIntervalMs: config.reconciliation.pollIntervalMs,
+    leaseSeconds: config.reconciliation.leaseSeconds,
+    retryBaseMs: config.reconciliation.retryBaseMs,
+    retryMaxMs: config.reconciliation.retryMaxMs,
+    maxAttempts: config.reconciliation.maxAttempts
+});
 
 const app = createApp({
     reservationService,
-    bodyLimit: config.bodyLimit
+    bodyLimit: config.bodyLimit,
+    internalApiToken: config.internalApiToken
 });
 
 pool.on('error', (error) => {
@@ -23,6 +44,13 @@ pool.on('error', (error) => {
 
 const server = app.listen(config.port, '0.0.0.0', () => {
     console.log(`Reservation Service ejecutándose en el puerto ${config.port}`);
+
+    if (config.reconciliation.enabled) {
+        reconciliationService.start();
+        console.log('Worker de reconciliación iniciado.');
+    } else {
+        console.log('Worker de reconciliación deshabilitado por configuración.');
+    }
 });
 
 let shuttingDown = false;
@@ -40,6 +68,12 @@ async function shutdown(signal) {
         process.exit(1);
     }, 10000);
     forceExit.unref();
+
+    try {
+        await reconciliationService.stop();
+    } catch (error) {
+        console.error('Error al detener el worker de reconciliación:', error.message);
+    }
 
     server.close(async () => {
         try {
