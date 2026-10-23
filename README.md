@@ -25,3 +25,25 @@ Prototipo académico desarrollado mediante una arquitectura de microservicios.
 Reservation Service implementado: reservas, entradas, salidas, sesiones y coordinación HTTP con Parking Service. Consulta `reservation-service/README.md` para la configuración, migraciones, endpoints y pruebas.
 
 Los demás servicios continúan en desarrollo.
+
+## Frontend
+
+Interfaz en React + Vite. Consume el backend únicamente a través del API Gateway.
+
+### Ejecución
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+### Pantallas
+
+| Ruta | Pantalla |
+|---|---|
+| `/` | Panel de plazas: totales por estado y cuadrícula por nivel |
+| `/reservations` | Crear, listar y cancelar reservas |
+| `/sessions` | Registrar entrada y salida; duración de la sesión |
+| `/payments` | Calcular importe y registrar pago simulado |
+| `/admin/spaces` | Registrar plazas y cambiar su estado |
