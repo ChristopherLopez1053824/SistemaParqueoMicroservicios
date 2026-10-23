@@ -33,10 +33,14 @@ export default function ReservationsPage() {
 
     const [spaces, setSpaces] = useState([]);
     const [reservations, setReservations] = useState([]);
+    const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState(null);
 
     const [spaceId, setSpaceId] = useState(searchParams.get('spaceId') || '');
     const [vehiclePlate, setVehiclePlate] = useState('');
+    const [scheduled, setScheduled] = useState(false);
+    const [startsAt, setStartsAt] = useState('');
+    const [durationMinutes, setDurationMinutes] = useState('');
     const [formErrors, setFormErrors] = useState({});
     const [submitting, setSubmitting] = useState(false);
     const [result, setResult] = useState(null);
@@ -44,12 +48,14 @@ export default function ReservationsPage() {
     const [busyId, setBusyId] = useState(null);
 
     const load = useCallback(async () => {
+        setLoading(true);
         setLoadError(null);
         const [spacesRes, reservationsRes] = await Promise.allSettled([listSpaces(), listReservations()]);
         if (spacesRes.status === 'fulfilled') setSpaces(spacesRes.value.spaces);
         if (reservationsRes.status === 'fulfilled') setReservations(reservationsRes.value.reservations);
         const failed = [spacesRes, reservationsRes].find((r) => r.status === 'rejected');
         if (failed) setLoadError(failed.reason);
+        setLoading(false);
     }, []);
 
     useEffect(() => { load(); }, [load]);
@@ -61,6 +67,7 @@ export default function ReservationsPage() {
         const errors = {};
         if (!isUuid(spaceId)) errors.spaceId = 'Seleccione una plaza válida.';
         if (!vehiclePlate.trim()) errors.vehiclePlate = 'La placa es obligatoria.';
+        if (scheduled && !startsAt) errors.startsAt = 'Indique la hora de llegada.';
         setFormErrors(errors);
         return Object.keys(errors).length === 0;
     }
@@ -71,13 +78,21 @@ export default function ReservationsPage() {
         setSubmitting(true);
         setResult(null);
         setActionError(null);
-        const input = { spaceId, vehiclePlate: vehiclePlate.trim() };
+        const input = {
+            spaceId,
+            vehiclePlate: vehiclePlate.trim(),
+            ...(scheduled && startsAt ? { startsAt: new Date(startsAt).toISOString() } : {}),
+            ...(scheduled && durationMinutes ? { durationMinutes: Number(durationMinutes) } : {})
+        };
         const startedAt = Date.now();
 
         function onCreated(reservation, text) {
             setResult({ type: 'success', text: `${text} Placa ${reservation.vehiclePlate ?? input.vehiclePlate}, id ${reservation.id ?? reservation.reservationId}.` });
             setVehiclePlate('');
             setSpaceId('');
+            setScheduled(false);
+            setStartsAt('');
+            setDurationMinutes('');
         }
 
         try {
@@ -130,10 +145,12 @@ export default function ReservationsPage() {
         <div className="page">
             <div className="page-header">
                 <h1>Reservas</h1>
-                <button type="button" className="btn btn-secondary" onClick={load}>Actualizar</button>
+                <button type="button" className="btn btn-secondary" onClick={load} disabled={loading}>
+                    {loading ? 'Actualizando…' : 'Actualizar'}
+                </button>
             </div>
 
-            <Alert error={loadError} title="Error al cargar datos" />
+            <Alert error={loadError} title="No se pudieron cargar las plazas o las reservas" />
             {result && <Alert type={result.type} onClose={() => setResult(null)}>{result.text}</Alert>}
             <Alert error={actionError} title="La operación no se completó" onClose={() => setActionError(null)} />
 
@@ -163,8 +180,43 @@ export default function ReservationsPage() {
                         />
                         {formErrors.vehiclePlate && <span className="field-error">{formErrors.vehiclePlate}</span>}
                     </label>
+                    <label className="checkbox-row">
+                        <input
+                            type="checkbox"
+                            checked={scheduled}
+                            onChange={(e) => setScheduled(e.target.checked)}
+                        />
+                        Reservar para más tarde (en lugar de ahora mismo)
+                    </label>
+                    {scheduled && (
+                        <>
+                            <label>
+                                Hora de llegada
+                                <input
+                                    type="datetime-local"
+                                    value={startsAt}
+                                    onChange={(e) => setStartsAt(e.target.value)}
+                                />
+                                {formErrors.startsAt && <span className="field-error">{formErrors.startsAt}</span>}
+                                <span className="muted small">Hasta 2 horas de anticipación.</span>
+                            </label>
+                            <label>
+                                Duración estimada (minutos)
+                                <input
+                                    type="number"
+                                    min="15"
+                                    max="480"
+                                    step="15"
+                                    value={durationMinutes}
+                                    onChange={(e) => setDurationMinutes(e.target.value)}
+                                    placeholder="240"
+                                />
+                                <span className="muted small">Se usa solo para evitar reservas que choquen de horario; déjelo vacío para usar el valor por defecto.</span>
+                            </label>
+                        </>
+                    )}
                     <button type="submit" className="btn btn-primary" disabled={submitting}>
-                        {submitting ? 'Reservando…' : 'Reservar'}
+                        {submitting ? 'Reservando…' : scheduled ? 'Programar reserva' : 'Reservar'}
                     </button>
                     {available.length === 0 && spaces.length > 0 && (
                         <p className="muted">No hay plazas disponibles en este momento.</p>
@@ -173,8 +225,10 @@ export default function ReservationsPage() {
 
                 <div className="card">
                     <h2>Listado de reservas</h2>
-                    {reservations.length === 0 ? (
-                        <p className="muted">No hay reservas registradas.</p>
+                    {loading && reservations.length === 0 ? (
+                        <p className="muted">Cargando reservas…</p>
+                    ) : reservations.length === 0 ? (
+                        <p className="muted">Todavía no hay reservaciones registradas.</p>
                     ) : (
                         <div className="table-wrap">
                             <table>
@@ -184,7 +238,7 @@ export default function ReservationsPage() {
                                         <th>Plaza</th>
                                         <th>Placa</th>
                                         <th>Estado</th>
-                                        <th>Creada</th>
+                                        <th>Llegada</th>
                                         <th />
                                     </tr>
                                 </thead>
@@ -197,7 +251,12 @@ export default function ReservationsPage() {
                                                 <td>{spaceById[r.spaceId]?.code ?? <code>{shortId(r.spaceId)}</code>}</td>
                                                 <td>{r.vehiclePlate}</td>
                                                 <td><StatusBadge status={r.status} labels={RESERVATION_STATUS_LABELS} /></td>
-                                                <td>{formatDateTime(r.createdAt)}</td>
+                                                <td>
+                                                    {formatDateTime(r.startsAt)}
+                                                    {r.status === 'confirmed' && !r.spaceClaimedAt && (
+                                                        <div className="muted small">Programada · plaza aún no reclamada</div>
+                                                    )}
+                                                </td>
                                                 <td className="row-actions">
                                                     {r.status === 'confirmed' && (
                                                         <>

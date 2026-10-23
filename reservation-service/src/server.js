@@ -6,6 +6,7 @@ const { ReservationRepository } = require('./repositories/reservation-repository
 const { ParkingClient } = require('./http/parking-client');
 const { ReservationService } = require('./services/reservation-service');
 const { ReconciliationService } = require('./services/reconciliation-service');
+const { ExpirationService } = require('./services/expiration-service');
 
 const instanceId = `${os.hostname()}:${process.pid}`;
 const repository = new ReservationRepository(pool);
@@ -19,7 +20,11 @@ const reservationService = new ReservationService({
     parkingClient,
     operationOwnerId: `${instanceId}:api`,
     reconciliationMaxAttempts: config.reconciliation.maxAttempts,
-    reconciliationRetryBaseMs: config.reconciliation.retryBaseMs
+    reconciliationRetryBaseMs: config.reconciliation.retryBaseMs,
+    maxAdvanceMinutes: config.scheduling.maxAdvanceMinutes,
+    defaultDurationMinutes: config.scheduling.defaultDurationMinutes,
+    minDurationMinutes: config.scheduling.minDurationMinutes,
+    maxDurationMinutes: config.scheduling.maxDurationMinutes
 });
 const reconciliationService = new ReconciliationService({
     repository,
@@ -30,6 +35,13 @@ const reconciliationService = new ReconciliationService({
     retryBaseMs: config.reconciliation.retryBaseMs,
     retryMaxMs: config.reconciliation.retryMaxMs,
     maxAttempts: config.reconciliation.maxAttempts
+});
+const expirationService = new ExpirationService({
+    repository,
+    reservationService,
+    pollIntervalMs: config.expiration.pollIntervalMs,
+    graceMinutes: config.expiration.graceMinutes,
+    batchSize: config.expiration.batchSize
 });
 
 const app = createApp({
@@ -50,6 +62,13 @@ const server = app.listen(config.port, '0.0.0.0', () => {
         console.log('Worker de reconciliación iniciado.');
     } else {
         console.log('Worker de reconciliación deshabilitado por configuración.');
+    }
+
+    if (config.expiration.enabled) {
+        expirationService.start();
+        console.log('Worker de expiración de reservas (no-show) iniciado.');
+    } else {
+        console.log('Worker de expiración de reservas deshabilitado por configuración.');
     }
 });
 
@@ -73,6 +92,12 @@ async function shutdown(signal) {
         await reconciliationService.stop();
     } catch (error) {
         console.error('Error al detener el worker de reconciliación:', error.message);
+    }
+
+    try {
+        await expirationService.stop();
+    } catch (error) {
+        console.error('Error al detener el worker de expiración de reservas:', error.message);
     }
 
     server.close(async () => {

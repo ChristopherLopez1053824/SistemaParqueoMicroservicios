@@ -234,17 +234,26 @@ class ReconciliationService {
             return;
         }
 
+        // "reserve_space" solo se usa para reservas inmediatas (ver
+        // ReservationService.createReservation); la plaza ya se reclamó físicamente
+        // arriba, así que space_claimed_at se marca desde ya.
+        const startsAt = payload.startsAt ? new Date(payload.startsAt) : new Date(operation.created_at);
+        const endsAt = payload.endsAt ? new Date(payload.endsAt) : new Date(startsAt.getTime() + 4 * 60 * 60 * 1000);
+
         try {
             await this.repository.withTransaction(async (transaction) => {
                 await transaction.insertReservation({
                     id: reservationId,
                     spaceId,
-                    vehiclePlate
+                    vehiclePlate,
+                    startsAt,
+                    endsAt,
+                    spaceClaimedAt: new Date()
                 });
                 await transaction.completeOperation({ id: operation.id });
             });
         } catch (error) {
-            if (error && error.code === '23505') {
+            if (error && (error.code === '23505' || error.code === '23P01')) {
                 throw new NonRetryableError('Ya existe otra reserva confirmada para la plaza.', { cause: error });
             }
             throw error;

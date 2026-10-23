@@ -4,6 +4,12 @@ const { asyncHandler } = require('../middleware/common');
 function createSessionsRouter(reservationService) {
     const router = express.Router();
 
+    router.get('/', asyncHandler(async (req, res) => {
+        const { status, vehiclePlate, ticketNumber } = req.query;
+        const sessions = await reservationService.listSessions({ status, vehiclePlate, ticketNumber });
+        res.status(200).json({ data: sessions, meta: { total: sessions.length } });
+    }));
+
     router.post('/:reservationId/entry', asyncHandler(async (req, res) => {
         const session = await reservationService.registerEntry(req.params.reservationId, {
             requestId: req.requestId

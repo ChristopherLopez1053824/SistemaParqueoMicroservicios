@@ -264,15 +264,12 @@ test('PATCH /spaces/:id/status rechaza estados desconocidos', async () => {
     assert.equal(body.error.details[0].field, 'status');
 });
 
-test('PATCH /spaces/:id/status rechaza ocupar una plaza en mantenimiento', async () => {
-    pool.query = async (text) => {
-        if (text.includes('UPDATE parking.parking_spaces')) {
-            return { rowCount: 0, rows: [] };
-        }
-        if (text.includes('WHERE id = $1')) {
-            return { rowCount: 1, rows: [spaceRow({ status: 'maintenance' })] };
-        }
-        throw new Error(`Consulta inesperada: ${text}`);
+test('PATCH /spaces/:id/status rechaza "occupied" sin consultar la base de datos', async () => {
+    // "occupied" y "reserved" solo pueden asignarse a través de los endpoints de
+    // reserva, que validan el reservationId propietario. El endpoint genérico no
+    // debe poder ocupar ni liberar una plaza sin pasar por ese flujo.
+    pool.query = async () => {
+        throw new Error('No debe consultarse la base de datos');
     };
 
     const { status, body } = await request(
@@ -280,11 +277,31 @@ test('PATCH /spaces/:id/status rechaza ocupar una plaza en mantenimiento', async
         jsonOptions('PATCH', { status: 'occupied' })
     );
 
-    assert.equal(status, 409);
-    assert.equal(body.error.code, 'SPACE_NOT_AVAILABLE');
+    assert.equal(status, 400);
+    assert.equal(body.error.code, 'VALIDATION_ERROR');
+    assert.equal(body.error.details[0].field, 'status');
 });
 
-test('PATCH /spaces/:id/status rechaza reservar una plaza ya ocupada', async () => {
+test('PATCH /spaces/:id/status rechaza "reserved" sin consultar la base de datos', async () => {
+    pool.query = async () => {
+        throw new Error('No debe consultarse la base de datos');
+    };
+
+    const { status, body } = await request(
+        `/spaces/${SPACE_ID}/status`,
+        jsonOptions('PATCH', { status: 'reserved' })
+    );
+
+    assert.equal(status, 400);
+    assert.equal(body.error.code, 'VALIDATION_ERROR');
+    assert.equal(body.error.details[0].field, 'status');
+});
+
+test('PATCH /spaces/:id/status no puede liberar una plaza ocupada sin pasar por checkout', async () => {
+    // Antes de la corrección, esta llamada liberaba directamente una plaza
+    // "occupied" a "available" sin verificar ninguna reserva ni sesión activa.
+    // "available" sigue siendo un estado administrable (regresa de mantenimiento),
+    // pero su único origen admitido por este endpoint es "maintenance", no "occupied".
     pool.query = async (text) => {
         if (text.includes('UPDATE parking.parking_spaces')) {
             return { rowCount: 0, rows: [] };
@@ -297,11 +314,11 @@ test('PATCH /spaces/:id/status rechaza reservar una plaza ya ocupada', async () 
 
     const { status, body } = await request(
         `/spaces/${SPACE_ID}/status`,
-        jsonOptions('PATCH', { status: 'reserved' })
+        jsonOptions('PATCH', { status: 'available' })
     );
 
     assert.equal(status, 409);
-    assert.equal(body.error.code, 'SPACE_NOT_AVAILABLE');
+    assert.equal(body.error.code, 'INVALID_STATE_TRANSITION');
 });
 
 test('PATCH /spaces/:id/status rechaza transiciones incompatibles', async () => {

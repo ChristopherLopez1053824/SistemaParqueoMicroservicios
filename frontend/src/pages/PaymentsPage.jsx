@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Alert from '../components/Alert';
+import SessionPicker from '../components/SessionPicker';
 import StatusBadge from '../components/StatusBadge';
 import { createPayment, createQuote, getPaymentBySession } from '../services/payment.service';
 import { PAYMENT_STATUS_LABELS } from '../utils/constants';
@@ -14,6 +15,8 @@ const RETRYABLE = new Set(['NETWORK_ERROR', 'TIMEOUT', 'SERVICE_UNAVAILABLE']);
 export default function PaymentsPage() {
     const [searchParams] = useSearchParams();
     const [sessionId, setSessionId] = useState(searchParams.get('sessionId') || '');
+    const [selectedSession, setSelectedSession] = useState(null);
+    const [manualLookup, setManualLookup] = useState(false);
     const [quote, setQuote] = useState(null);
     const [payment, setPayment] = useState(null);
     const [idempotencyKey, setIdempotencyKey] = useState(null);
@@ -51,10 +54,7 @@ export default function PaymentsPage() {
         return id;
     }
 
-    function handleQuote(e) {
-        e.preventDefault();
-        const id = validSessionId();
-        if (!id) return;
+    function requestQuote(id) {
         run('quote', async () => {
             setPayment(null);
             const data = await createQuote(id);
@@ -64,6 +64,25 @@ export default function PaymentsPage() {
             setIdempotencyKey(getPendingIdempotencyKey(data.quoteId) || uuidv4());
         });
     }
+
+    function handleQuote(e) {
+        e.preventDefault();
+        const id = validSessionId();
+        if (!id) return;
+        requestQuote(id);
+    }
+
+    function handlePickSession(picked) {
+        setSessionId(picked.sessionId);
+        setSelectedSession(picked);
+        requestQuote(picked.sessionId);
+    }
+
+    useEffect(() => {
+        const initial = searchParams.get('sessionId');
+        if (isUuid(initial)) requestQuote(initial);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     function handlePay() {
         if (!quote || !idempotencyKey) return;
@@ -116,38 +135,65 @@ export default function PaymentsPage() {
             )}
 
             <div className="two-col">
-                <form className="card form" onSubmit={handleQuote} noValidate>
-                    <h2>1. Calcular importe</h2>
-                    <label>
-                        sessionId
-                        <input
-                            type="text"
-                            value={sessionId}
-                            onChange={(e) => setSessionId(e.target.value)}
-                            placeholder="UUID de la sesión completada"
-                        />
-                    </label>
-                    <div className="btn-row">
-                        <button type="submit" className="btn btn-primary" disabled={busy !== null}>
-                            {busy === 'quote' ? 'Calculando…' : 'Calcular importe'}
-                        </button>
-                        <button type="button" className="btn btn-secondary" onClick={handleLookup} disabled={busy !== null}>
-                            {busy === 'lookup' ? 'Consultando…' : 'Consultar pago de la sesión'}
-                        </button>
-                    </div>
-                </form>
+                <div className="card">
+                    <h2>1. Buscar la sesión a cobrar</h2>
+                    <p className="muted small">
+                        Busca por la placa del vehículo o por el número de ticket. Solo se pueden cotizar sesiones finalizadas.
+                    </p>
+                    {!manualLookup ? (
+                        <>
+                            <SessionPicker
+                                status="completed"
+                                onSelect={handlePickSession}
+                                emptyHint="Todavía no hay sesiones finalizadas listas para cobrar. Registra la salida del vehículo en Entrada / Salida y vuelve a buscarla aquí."
+                            />
+                            <button type="button" className="advanced-toggle" onClick={() => setManualLookup(true)}>
+                                ¿Ya tienes el identificador técnico? Ingrésalo manualmente.
+                            </button>
+                        </>
+                    ) : (
+                        <>
+                            <form className="form" onSubmit={handleQuote} noValidate>
+                                <label>
+                                    Identificador técnico de la sesión
+                                    <input
+                                        type="text"
+                                        value={sessionId}
+                                        onChange={(e) => setSessionId(e.target.value)}
+                                        placeholder="UUID de la sesión completada"
+                                    />
+                                </label>
+                                <div className="btn-row">
+                                    <button type="submit" className="btn btn-primary" disabled={busy !== null}>
+                                        {busy === 'quote' ? 'Calculando…' : 'Calcular importe'}
+                                    </button>
+                                    <button type="button" className="btn btn-secondary" onClick={handleLookup} disabled={busy !== null}>
+                                        {busy === 'lookup' ? 'Consultando…' : 'Consultar pago de la sesión'}
+                                    </button>
+                                </div>
+                            </form>
+                            <button type="button" className="advanced-toggle" onClick={() => setManualLookup(false)}>
+                                Volver a la búsqueda por placa o ticket
+                            </button>
+                        </>
+                    )}
+                </div>
 
                 <div className="stack">
                     {quote && (
                         <div className="card">
                             <h2>2. Detalle del cálculo</h2>
+                            {selectedSession && (
+                                <p className="muted small">
+                                    Ticket {selectedSession.ticketNumber} · Placa {selectedSession.vehiclePlate}
+                                </p>
+                            )}
                             <dl className="kv">
                                 <dt>Duración</dt><dd>{formatDuration(quote.durationSeconds)}</dd>
                                 <dt>Horas cobrables</dt><dd>{quote.billableHours}</dd>
                                 <dt>Tarifa por hora</dt><dd>{formatMoney(quote.hourlyRateMinor, quote.currency)}</dd>
                                 <dt>Vence</dt>
                                 <dd>{formatDateTime(quote.expiresAt)} {expired && <span className="badge badge-failed">Vencida</span>}</dd>
-                                <dt>quoteId</dt><dd><code>{quote.quoteId}</code></dd>
                             </dl>
                             <div className="amount">
                                 <span>Total a pagar</span>
@@ -172,12 +218,17 @@ export default function PaymentsPage() {
                                 <h2>3. Resultado del pago</h2>
                                 <StatusBadge status={payment.status} labels={PAYMENT_STATUS_LABELS} />
                             </div>
+                            {selectedSession && (
+                                <p className="muted small">
+                                    Ticket {selectedSession.ticketNumber} · Placa {selectedSession.vehiclePlate}
+                                </p>
+                            )}
                             <dl className="kv">
-                                <dt>paymentId</dt><dd><code>{payment.paymentId ?? payment.id}</code></dd>
-                                <dt>sessionId</dt><dd><code>{payment.sessionId}</code></dd>
                                 <dt>Importe</dt><dd>{formatMoney(payment.amountMinor, payment.currency)}</dd>
                                 <dt>Método</dt><dd>{payment.method}</dd>
                                 <dt>Fecha</dt><dd>{formatDateTime(payment.createdAt)}</dd>
+                                <dt>Referencia interna</dt>
+                                <dd><code className="small muted">{payment.paymentId ?? payment.id}</code></dd>
                             </dl>
                             {payment.status === 'succeeded' && (
                                 <Alert type="success">Pago simulado confirmado. No se transfirió dinero real.</Alert>

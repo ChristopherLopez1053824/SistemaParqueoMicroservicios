@@ -29,15 +29,25 @@ class FakeTransaction {
         return cloneRow(this.repository.reservations.get(id));
     }
 
-    async insertReservation({ id, spaceId, vehiclePlate }) {
+    async insertReservation({ id, spaceId, vehiclePlate, startsAt, endsAt, spaceClaimedAt = null }) {
         if (this.repository.failInsertReservation) {
             throw new Error('Fallo simulado al insertar la reserva.');
         }
 
+        const newStart = startsAt.getTime();
+        const newEnd = endsAt.getTime();
+
+        // Replica la restricción de exclusión real: ninguna plaza puede tener dos
+        // reservas confirmadas con franjas horarias que se superpongan.
         for (const row of this.repository.reservations.values()) {
-            if (row.space_id === spaceId && row.status === 'confirmed') {
-                const error = new Error('duplicate key value violates unique constraint');
-                error.code = '23505';
+            if (row.space_id !== spaceId || row.status !== 'confirmed') {
+                continue;
+            }
+            const existingStart = row.starts_at.getTime();
+            const existingEnd = row.ends_at.getTime();
+            if (newStart < existingEnd && existingStart < newEnd) {
+                const error = new Error('exclusion constraint violation');
+                error.code = '23P01';
                 throw error;
             }
         }
@@ -48,6 +58,9 @@ class FakeTransaction {
             space_id: spaceId,
             vehicle_plate: vehiclePlate,
             status: 'confirmed',
+            starts_at: startsAt,
+            ends_at: endsAt,
+            space_claimed_at: spaceClaimedAt,
             created_at: timestamp,
             updated_at: timestamp
         };
@@ -62,6 +75,15 @@ class FakeTransaction {
         }
         row.status = toStatus;
         row.updated_at = this.repository.currentTime();
+        return cloneRow(row);
+    }
+
+    async markSpaceClaimed(id, claimedAt) {
+        const row = this.repository.reservations.get(id);
+        if (!row || row.space_claimed_at) {
+            return null;
+        }
+        row.space_claimed_at = claimedAt;
         return cloneRow(row);
     }
 
@@ -98,6 +120,7 @@ class FakeTransaction {
         const timestamp = this.repository.currentTime();
         const row = {
             id,
+            ticket_number: this.repository.nextTicketNumber++,
             reservation_id: reservationId,
             space_id: spaceId,
             vehicle_plate: vehiclePlate,
@@ -171,6 +194,7 @@ class FakeReservationRepository {
         this.failInsertSession = false;
         this.failCompleteSession = false;
         this.failListReservations = null;
+        this.nextTicketNumber = 1;
     }
 
     async listReservations() {
@@ -187,8 +211,44 @@ class FakeReservationRepository {
         return cloneRow(this.reservations.get(id));
     }
 
+    async findExpiredNoShowReservations({ graceMinutes, limit = 20 }) {
+        const deadlineMs = this.currentTime().getTime() - graceMinutes * 60 * 1000;
+        const hasSession = (reservationId) => [...this.sessions.values()]
+            .some((session) => session.reservation_id === reservationId);
+
+        return [...this.reservations.values()]
+            .filter((row) => row.status === 'confirmed'
+                && row.starts_at.getTime() <= deadlineMs
+                && !hasSession(row.id))
+            .sort((a, b) => a.starts_at.getTime() - b.starts_at.getTime())
+            .slice(0, limit)
+            .map(cloneRow);
+    }
+
     async findSessionById(id) {
         return cloneRow(this.sessions.get(id));
+    }
+
+    async listSessions({ status = null, vehiclePlate = null, ticketNumber = null, limit = 50 } = {}) {
+        let rows = [...this.sessions.values()];
+
+        if (status) {
+            rows = rows.filter((row) => row.status === status);
+        }
+
+        if (vehiclePlate) {
+            const prefix = vehiclePlate.toUpperCase();
+            rows = rows.filter((row) => row.vehicle_plate.toUpperCase().startsWith(prefix));
+        }
+
+        if (ticketNumber !== null && ticketNumber !== undefined) {
+            rows = rows.filter((row) => row.ticket_number === ticketNumber);
+        }
+
+        return rows
+            .sort((a, b) => b.entry_at.getTime() - a.entry_at.getTime())
+            .slice(0, limit)
+            .map(cloneRow);
     }
 
     async findOperationById(id) {

@@ -1,6 +1,8 @@
 const { AppError, CODES } = require('../lib/errors');
 const { isUuid, isPlainObject, requiredTrimmedString } = require('../lib/validate');
-const { SPACE_STATUSES, SPACE_TYPES, DEFAULT_SPACE_TYPE } = require('../lib/constants');
+const { SPACE_TYPES, DEFAULT_SPACE_TYPE, ADMIN_ASSIGNABLE_TRANSITIONS } = require('../lib/constants');
+
+const ADMIN_ASSIGNABLE_STATUSES = Object.keys(ADMIN_ASSIGNABLE_TRANSITIONS);
 const spaces = require('../services/parking.service');
 
 function toIso(value) {
@@ -112,14 +114,15 @@ async function updateSpaceStatus(req, res) {
     const body = isPlainObject(req.body) ? req.body : {};
     const status = body.status;
 
-    if (typeof status !== 'string' || !SPACE_STATUSES.includes(status)) {
+    if (typeof status !== 'string' || !ADMIN_ASSIGNABLE_STATUSES.includes(status)) {
         throw new AppError(
             400,
             CODES.VALIDATION_ERROR,
             'Los datos enviados no son válidos.',
             [{
                 field: 'status',
-                message: 'El estado debe ser "available", "reserved", "occupied" o "maintenance".'
+                message: 'Este endpoint solo administra los estados "available" y "maintenance". '
+                    + 'Para reservar, ocupar, liberar u ocupar una plaza use los endpoints de reserva asociados a una reservación.'
             }]
         );
     }

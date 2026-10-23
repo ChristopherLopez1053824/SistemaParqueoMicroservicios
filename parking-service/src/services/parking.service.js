@@ -1,46 +1,26 @@
 const { query } = require('../lib/query');
 const { AppError, CODES } = require('../lib/errors');
-const { ALLOWED_TRANSITIONS } = require('../lib/constants');
+const { ADMIN_ASSIGNABLE_TRANSITIONS } = require('../lib/constants');
 
 const SPACE_COLUMNS = 'id, code, level, space_type, status, reserved_by_reservation_id, created_at, updated_at';
 
+// Solo considera las transiciones administrativas (available <-> maintenance);
+// reserved/occupied se gestionan exclusivamente por los endpoints dedicados.
 function sourceStatusesFor(nextStatus) {
-    return Object.entries(ALLOWED_TRANSITIONS)
+    return Object.entries(ADMIN_ASSIGNABLE_TRANSITIONS)
         .filter(([, targets]) => targets.includes(nextStatus))
         .map(([status]) => status);
 }
 
 function transitionError(currentStatus, nextStatus) {
-    const details = [
-        {
-            field: 'status',
-            message: `No se permite cambiar el estado de "${currentStatus}" a "${nextStatus}".`
-        }
-    ];
-
-    if (nextStatus === 'reserved') {
-        return new AppError(
-            409,
-            CODES.SPACE_NOT_AVAILABLE,
-            'La plaza no está disponible para reservarse.',
-            details
-        );
-    }
-
-    if (nextStatus === 'occupied' && currentStatus === 'maintenance') {
-        return new AppError(
-            409,
-            CODES.SPACE_NOT_AVAILABLE,
-            'Una plaza en mantenimiento no puede ocuparse.',
-            details
-        );
-    }
-
     return new AppError(
         409,
         CODES.INVALID_STATE_TRANSITION,
         'La transición de estado solicitada no es válida.',
-        details
+        [{
+            field: 'status',
+            message: `No se permite cambiar el estado de "${currentStatus}" a "${nextStatus}".`
+        }]
     );
 }
 
@@ -120,9 +100,9 @@ async function updateSpaceStatus(id, nextStatus) {
 
     const result = await query(
         `UPDATE parking.parking_spaces
-         SET status = $2,
+         SET status = $2::text,
              reserved_by_reservation_id = CASE
-                 WHEN $2 IN ('available', 'maintenance', 'reserved') THEN NULL
+                 WHEN $2::text IN ('available', 'maintenance', 'reserved') THEN NULL
                  ELSE reserved_by_reservation_id
              END,
              updated_at = now()

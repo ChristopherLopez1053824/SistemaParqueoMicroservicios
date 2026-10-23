@@ -1,9 +1,16 @@
 import { request } from './api';
 
-export async function createReservation({ spaceId, vehiclePlate }) {
+// startsAt/durationMinutes son opcionales: si se omiten, la reserva es
+// inmediata ("llego ahora"), igual que antes de agregar reservas programadas.
+export async function createReservation({ spaceId, vehiclePlate, startsAt, durationMinutes }) {
     return (await request('/api/reservations', {
         method: 'POST',
-        body: { spaceId, vehiclePlate }
+        body: {
+            spaceId,
+            vehiclePlate,
+            ...(startsAt ? { startsAt } : {}),
+            ...(durationMinutes ? { durationMinutes } : {})
+        }
     })).data;
 }
 
@@ -31,4 +38,15 @@ export async function registerExit(sessionId) {
 
 export async function getSession(sessionId) {
     return (await request(`/api/reservations/sessions/${sessionId}`)).data;
+}
+
+// Permite encontrar una sesión por placa o ticket sin conocer su identificador interno.
+export async function listSessions({ status, vehiclePlate, ticketNumber } = {}) {
+    const params = new URLSearchParams();
+    if (status) params.set('status', status);
+    if (vehiclePlate) params.set('vehiclePlate', vehiclePlate);
+    if (ticketNumber) params.set('ticketNumber', ticketNumber);
+    const query = params.toString();
+    const { data, meta } = await request(`/api/reservations/sessions${query ? `?${query}` : ''}`);
+    return { sessions: data, total: meta?.total ?? data.length };
 }

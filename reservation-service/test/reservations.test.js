@@ -205,6 +205,9 @@ test('compensa la plaza si ya existe una reserva confirmada localmente', async (
         space_id: SPACE_ID,
         vehicle_plate: 'OLDPLATE',
         status: 'confirmed',
+        starts_at: now,
+        ends_at: new Date(now.getTime() + 4 * 60 * 60 * 1000),
+        space_claimed_at: now,
         created_at: now,
         updated_at: now
     });
