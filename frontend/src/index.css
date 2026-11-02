@@ -192,3 +192,71 @@ tbody tr:hover { background: var(--primary-soft); }
 .advanced-toggle { background: none; border: none; padding: 0; color: var(--muted); font-size: 0.8rem; text-decoration: underline; cursor: pointer; }
 .muted { color: var(--muted); }
 .small { font-size: 0.82rem; }
+
+/* Selector de perfil (roles definidos en código) */
+.brand { display: flex; align-items: center; gap: 0.6rem; }
+.brand-role {
+    font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+    background: rgba(255, 255, 255, 0.18); color: #fff; padding: 0.15rem 0.5rem; border-radius: 999px;
+}
+.role-switcher {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 0.3rem;
+    padding: 0.2rem; border-radius: 8px; background: rgba(255, 255, 255, 0.14);
+}
+.role-switcher-caption { font-size: 0.72rem; color: #dbe8fd; padding: 0 0.35rem; }
+.role-option {
+    font: inherit; font-size: 0.8rem; font-weight: 600; border: none; cursor: pointer;
+    padding: 0.35rem 0.65rem; border-radius: 6px; background: transparent; color: #e8f0fe;
+}
+.role-option:hover { background: rgba(255, 255, 255, 0.16); color: #fff; }
+.role-option:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
+.role-option-active { background: #fff; color: var(--primary); }
+.role-option-active:hover { background: #fff; color: var(--primary); }
+
+.page-subtitle { margin: 0; color: var(--muted); font-size: 0.9rem; max-width: 60ch; }
+.quick-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
+.quick-action {
+    display: inline-flex; align-items: center; gap: 0.35rem; text-decoration: none;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 0.45rem 0.8rem; font-size: 0.85rem; font-weight: 600; color: var(--primary-dark);
+    box-shadow: var(--shadow);
+}
+.quick-action:hover { background: var(--primary-soft); border-color: var(--accent); }
+.quick-action::before { content: '→'; color: var(--primary); }
+.user-plate-filter { margin-bottom: 0.9rem; padding-bottom: 0.9rem; border-bottom: 1px solid var(--border); }
+.user-plate-filter label { max-width: 220px; }
+.ticket-search { margin-bottom: 0.9rem; padding-bottom: 0.9rem; border-bottom: 1px solid var(--border); }
+.ticket-search h3 { color: var(--primary-dark); }
+.ticket-code {
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 1.05rem;
+    letter-spacing: 0.03em;
+    color: var(--primary-dark);
+}
+.reservation-summary { margin-bottom: 1rem; }
+
+/* Dashboard del propietario */
+.owner-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-bottom: 1rem; }
+.occupancy-row { display: flex; justify-content: space-between; align-items: baseline; margin-top: 0.75rem; color: var(--muted); font-size: 0.9rem; }
+.occupancy-row strong { color: var(--primary-dark); font-size: 1.05rem; }
+.progress { height: 10px; border-radius: 999px; background: var(--primary-soft); overflow: hidden; margin-top: 0.3rem; }
+.progress-bar { height: 100%; border-radius: 999px; background: var(--reserved); transition: width 0.3s ease; }
+.progress-available .progress-bar { background: var(--available); }
+.owner-space-list { display: flex; flex-direction: column; margin-top: 0.9rem; }
+.owner-space-row { display: flex; justify-content: space-between; padding: 0.35rem 0; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+.owner-space-row:last-child { border-bottom: none; }
+.owner-highlight { display: flex; flex-direction: column; gap: 0.15rem; margin-bottom: 0.8rem; padding: 0.75rem 0.9rem; border-radius: 10px; background: var(--available-bg); border: 1px solid var(--available-border); }
+.owner-highlight span { color: var(--muted); font-size: 0.8rem; }
+.owner-highlight strong { font-size: 1.8rem; color: var(--available); }
+.owner-indicators { margin-bottom: 1rem; }
+.indicator-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.75rem; }
+.indicator { display: flex; flex-direction: column; padding: 0.7rem 0.85rem; border-radius: 8px; background: var(--primary-soft); }
+.indicator-value { font-size: 1.4rem; font-weight: 700; color: var(--primary-dark); }
+.indicator-label { font-size: 0.8rem; color: var(--muted); }
+.owner-note { margin: 0; }
+
+@media (max-width: 860px) {
+    .topbar { padding: 0.75rem 1rem; }
+    .role-switcher { width: 100%; }
+    .role-switcher-caption { display: none; }
+}

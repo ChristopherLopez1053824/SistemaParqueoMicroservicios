@@ -39,6 +39,7 @@ test('crea una reserva válida y reserva la plaza', async (t) => {
     assert.equal(response.body.data.status, 'confirmed');
     assert.equal(response.body.data.spaceId, SPACE_ID);
     assert.equal(response.body.data.vehiclePlate, 'P123ABC');
+    assert.match(response.body.data.ticketNumber, /^PAR-\d{6}$/);
     assert.match(response.body.data.createdAt, /Z$/);
     assert.match(response.body.data.updatedAt, /Z$/);
 
@@ -141,10 +142,70 @@ test('consulta una reserva existente e inexistente', async (t) => {
 
     assert.equal(found.status, 200);
     assert.equal(found.body.data.id, created.body.data.id);
+    assert.equal(found.body.data.ticketNumber, created.body.data.ticketNumber);
 
     const missing = await request(server, 'GET', `/reservations/${MISSING_RESERVATION_ID}`);
     assert.equal(missing.status, 404);
     assert.equal(missing.body.error.code, 'RESOURCE_NOT_FOUND');
+});
+
+test('filtra reservas por placa y por ticket, exigiendo la placa para el ticket', async (t) => {
+    const { server, parkingClient } = await setup(t);
+    parkingClient.addSpace(SPACE_ID);
+    parkingClient.addSpace(OTHER_SPACE_ID);
+
+    const first = await createReservation(server);
+    const second = await createReservation(server, {
+        spaceId: OTHER_SPACE_ID,
+        vehiclePlate: 'M456XYZ'
+    });
+
+    assert.equal(first.status, 201);
+    assert.equal(second.status, 201);
+    assert.notEqual(first.body.data.ticketNumber, second.body.data.ticketNumber);
+
+    const byPlate = await request(server, 'GET', '/reservations?vehiclePlate=p123');
+    assert.equal(byPlate.status, 200);
+    assert.equal(byPlate.body.data.length, 1);
+    assert.equal(byPlate.body.data[0].id, first.body.data.id);
+
+    const byTicket = await request(
+        server,
+        'GET',
+        `/reservations?ticketNumber=${encodeURIComponent(first.body.data.ticketNumber)}&vehiclePlate=P123ABC`
+    );
+    assert.equal(byTicket.status, 200);
+    assert.equal(byTicket.body.data.length, 1);
+    assert.equal(byTicket.body.data[0].id, first.body.data.id);
+    assert.equal(byTicket.body.data[0].vehiclePlate, 'P123ABC');
+
+    const otherPlate = await request(
+        server,
+        'GET',
+        `/reservations?ticketNumber=${encodeURIComponent(first.body.data.ticketNumber)}&vehiclePlate=OTRA123`
+    );
+    assert.equal(otherPlate.status, 200);
+    assert.equal(otherPlate.body.data.length, 0);
+    assert.equal(otherPlate.body.meta.total, 0);
+
+    const noPlate = await request(
+        server,
+        'GET',
+        `/reservations?ticketNumber=${encodeURIComponent(first.body.data.ticketNumber)}`
+    );
+    assert.equal(noPlate.status, 400);
+    assert.equal(noPlate.body.error.code, 'VALIDATION_ERROR');
+    assert.equal(noPlate.body.error.details[0].field, 'vehiclePlate');
+});
+
+test('rechaza un número de ticket de reserva con formato inválido', async (t) => {
+    const { server } = await setup(t);
+
+    const response = await request(server, 'GET', '/reservations?ticketNumber=no-es-ticket&vehiclePlate=P123ABC');
+
+    assert.equal(response.status, 400);
+    assert.equal(response.body.error.code, 'VALIDATION_ERROR');
+    assert.equal(response.body.error.details[0].field, 'ticketNumber');
 });
 
 test('cancela una reserva válida y libera la plaza', async (t) => {

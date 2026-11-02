@@ -55,6 +55,7 @@ class FakeTransaction {
         const timestamp = this.repository.currentTime();
         const row = {
             id,
+            ticket_number: this.repository.nextReservationTicketNumber++,
             space_id: spaceId,
             vehicle_plate: vehiclePlate,
             status: 'confirmed',
@@ -195,14 +196,30 @@ class FakeReservationRepository {
         this.failCompleteSession = false;
         this.failListReservations = null;
         this.nextTicketNumber = 1;
+        this.nextReservationTicketNumber = 1;
     }
 
-    async listReservations() {
+    async listReservations({ status = null, vehiclePlate = null, ticketNumber = null } = {}) {
         if (this.failListReservations) {
             throw this.failListReservations;
         }
 
-        return [...this.reservations.values()]
+        let rows = [...this.reservations.values()];
+
+        if (status) {
+            rows = rows.filter((row) => row.status === status);
+        }
+
+        if (vehiclePlate) {
+            const prefix = vehiclePlate.toUpperCase();
+            rows = rows.filter((row) => row.vehicle_plate.toUpperCase().startsWith(prefix));
+        }
+
+        if (ticketNumber !== null && ticketNumber !== undefined) {
+            rows = rows.filter((row) => row.ticket_number === ticketNumber);
+        }
+
+        return rows
             .sort((a, b) => b.created_at.getTime() - a.created_at.getTime())
             .map(cloneRow);
     }

@@ -19,6 +19,24 @@ function write(key, value) {
 
 const SESSIONS_KEY = 'parking.recentSessions';
 const IDEMPOTENCY_KEYS = 'parking.pendingIdempotencyKeys';
+const ACTIVE_ROLE_KEY = 'parking.activeRole';
+const USER_PLATE_KEY = 'parking.userPlate';
+
+export function getActiveRole() {
+    return read(ACTIVE_ROLE_KEY, null);
+}
+
+export function setActiveRole(role) {
+    write(ACTIVE_ROLE_KEY, role);
+}
+
+export function getUserPlate() {
+    return read(USER_PLATE_KEY, '');
+}
+
+export function setUserPlate(plate) {
+    write(USER_PLATE_KEY, plate);
+}
 
 export function getRecentSessions() {
     return read(SESSIONS_KEY, []);

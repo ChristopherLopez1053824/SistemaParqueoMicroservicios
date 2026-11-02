@@ -66,7 +66,7 @@ microservicios backend quedan solo en la red interna `parqueo-internal`.
 | POST | `/api/parking/spaces` | Parking | `/spaces` |
 | PATCH | `/api/parking/spaces/:id/status` | Parking | `/spaces/:id/status` (solo `available`/`maintenance`) |
 | POST | `/api/reservations` | Reservation | `/reservations` |
-| GET | `/api/reservations` | Reservation | `/reservations` |
+| GET | `/api/reservations` | Reservation | `/reservations` (lista/busca por `status`, `vehiclePlate`, `ticketNumber`) |
 | GET | `/api/reservations/:id` | Reservation | `/reservations/:id` |
 | PATCH | `/api/reservations/:id/cancel` | Reservation | `/reservations/:id/cancel` |
 | GET | `/api/reservations/sessions` | Reservation | `/sessions` (lista/busca por `status`, `vehiclePlate`, `ticketNumber`) |
@@ -121,9 +121,10 @@ Respuesta de error:
 
 Convenciones: JSON en `camelCase`, tablas/columnas en `snake_case`, UUID v4,
 fechas ISO 8601 UTC con sufijo `Z`, importes enteros en centavos (`amountMinor`),
-moneda GTQ. El número de ticket de una sesión se expone como `ticketNumber`
-(`PAR-000123`) de solo presentación; el identificador real sigue siendo
-`sessionId` (UUID). Las respuestas incluyen `x-request-id`; el Gateway propaga
+moneda GTQ. El número de ticket de una reserva o sesión se expone como
+`ticketNumber` (`PAR-000123`) de solo presentación; el identificador real sigue
+siendo `id`/`sessionId` (UUID). El ticket de la reserva se genera al crearla y
+se conserva en `reservations.reservations.ticket_number`. Las respuestas incluyen `x-request-id`; el Gateway propaga
 el UUID válido enviado por el cliente o genera uno nuevo y lo reenvía a los
 servicios.
 
@@ -213,7 +214,7 @@ Aplicar migraciones existentes antes del primer arranque (cada servicio tiene
 
 ```bash
 cd parking-service && npm install && npm run migrate       # 001_reservation_coordination.sql
-cd reservation-service && npm install && npm run migrate   # 001_init.sql .. 004_scheduled_reservations.sql
+cd reservation-service && npm install && npm run migrate   # 001_init.sql .. 005_reservation_ticket_number.sql
 cd payment-service && npm install && npm run migrate       # 01_payments_schema.sql, 02_payments_retry_after_failure.sql
 ```
 
@@ -310,6 +311,14 @@ curl -i -X POST http://localhost:3000/api/reservations/sessions/<reservationId>/
 curl -i -X POST http://localhost:3000/api/reservations/sessions/<sessionId>/exit
 ```
 
+Buscar una reserva por placa o por su ticket (la placa es obligatoria al
+consultar por ticket para validar que la reserva pertenece al usuario):
+
+```bash
+curl "http://localhost:3000/api/reservations?vehiclePlate=P123"
+curl "http://localhost:3000/api/reservations?vehiclePlate=P123&ticketNumber=PAR-000001"
+```
+
 Buscar una sesión por placa o ticket, sin conocer su UUID:
 
 ```bash
@@ -338,7 +347,7 @@ ni la plaza (la plaza ya se liberó al registrar la salida).
 ```bash
 cd api-gateway && npm test           # 16 pruebas
 cd parking-service && npm test       # 32 pruebas
-cd reservation-service && npm test   # 60 pruebas
+cd reservation-service && npm test   # 62 pruebas
 cd payment-service && npm test       # 20 pruebas
 ```
 

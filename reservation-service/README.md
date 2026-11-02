@@ -49,7 +49,10 @@ API Gateway (Node.js + Express)
 reservation-service/
 ├── migrations/
 │   ├── 001_init.sql
-│   └── 002_reconciliation_operations.sql
+│   ├── 002_reconciliation_operations.sql
+│   ├── 003_session_ticket_number.sql
+│   ├── 004_scheduled_reservations.sql
+│   └── 005_reservation_ticket_number.sql
 ├── src/
 │   ├── app.js
 │   ├── config.js
@@ -228,7 +231,7 @@ Cobertura funcional actual:
 - Autenticación interna y exclusión del health check.
 - Envío del token interno desde Reservation Service hacia Parking Service.
 
-Resultado de la última ejecución local: **45 pruebas aprobadas, 0 fallidas**. Estas pruebas no sustituyen una prueba de integración contra Supabase y los servicios reales.
+Resultado de la última ejecución local: **62 pruebas aprobadas, 0 fallidas**. Estas pruebas no sustituyen una prueba de integración contra Supabase y los servicios reales.
 
 ## Endpoints
 
@@ -237,7 +240,7 @@ Todas las rutas internas se exponen sin el prefijo `/v1`. `GET /health` es públ
 | Método | Ruta interna | Ruta pública mediante Gateway | Propósito | Éxitos | Errores habituales |
 |---|---|---|---|---|---|
 | `POST` | `/reservations` | `/api/reservations` | Crear reserva | `201` | `400`, `404`, `409`, `503`, `504` |
-| `GET` | `/reservations` | `/api/reservations` | Listar reservas | `200` | `500` |
+| `GET` | `/reservations` | `/api/reservations` | Listar/buscar reservas por `status`, `vehiclePlate` o `ticketNumber` | `200` | `400`, `500` |
 | `GET` | `/reservations/:id` | `/api/reservations/:id` | Consultar reserva | `200` | `400`, `404` |
 | `PATCH` | `/reservations/:id/cancel` | `/api/reservations/:id/cancel` | Cancelar reserva | `200` | `400`, `404`, `409`, `503` |
 | `POST` | `/sessions/:reservationId/entry` | `/api/reservations/sessions/:reservationId/entry` | Registrar entrada | `201` | `400`, `404`, `409`, `503` |

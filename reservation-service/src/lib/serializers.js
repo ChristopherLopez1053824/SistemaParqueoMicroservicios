@@ -10,6 +10,7 @@ function toIso(value) {
 function serializeReservation(row) {
     return {
         id: row.id,
+        ticketNumber: formatTicketNumber(row.ticket_number),
         spaceId: row.space_id,
         vehiclePlate: row.vehicle_plate,
         status: row.status,

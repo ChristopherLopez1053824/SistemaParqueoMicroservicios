@@ -11,8 +11,8 @@ const TICKET_QUERY_RE = /^(PAR-?)?\d+$/i;
 
 // Permite encontrar una sesión por placa o número de ticket, sin que el usuario
 // necesite conocer o escribir su identificador interno (uuid).
-export default function SessionPicker({ status, onSelect, emptyHint }) {
-    const [query, setQuery] = useState('');
+export default function SessionPicker({ status, onSelect, emptyHint, initialQuery = '' }) {
+    const [query, setQuery] = useState(initialQuery);
     const [sessions, setSessions] = useState([]);
     const [spacesById, setSpacesById] = useState({});
     const [loading, setLoading] = useState(true);
@@ -41,7 +41,10 @@ export default function SessionPicker({ status, onSelect, emptyHint }) {
         }
     }, [status]);
 
-    useEffect(() => { search(''); }, [search]);
+    useEffect(() => {
+        setQuery(initialQuery);
+        search(initialQuery);
+    }, [search, initialQuery]);
 
     function handleSubmit(e) {
         e.preventDefault();

@@ -14,8 +14,13 @@ export async function createReservation({ spaceId, vehiclePlate, startsAt, durat
     })).data;
 }
 
-export async function listReservations() {
-    const { data, meta } = await request('/api/reservations');
+export async function listReservations({ status, vehiclePlate, ticketNumber } = {}) {
+    const params = new URLSearchParams();
+    if (status) params.set('status', status);
+    if (vehiclePlate) params.set('vehiclePlate', vehiclePlate);
+    if (ticketNumber) params.set('ticketNumber', ticketNumber);
+    const query = params.toString();
+    const { data, meta } = await request(`/api/reservations${query ? `?${query}` : ''}`);
     return { reservations: data, total: meta?.total ?? data.length };
 }
 

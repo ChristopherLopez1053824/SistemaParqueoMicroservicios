@@ -417,8 +417,35 @@ class ReservationService {
         }
     }
 
-    async listReservations() {
-        const rows = await this.repository.listReservations();
+    async listReservations({ status, vehiclePlate, ticketNumber } = {}) {
+        const allowedStatuses = ['confirmed', 'cancelled', 'completed'];
+
+        if (status !== undefined && status !== null && status !== '' && !allowedStatuses.includes(status)) {
+            throw validationError([
+                { field: 'status', message: 'El estado debe ser "confirmed", "cancelled" o "completed".' }
+            ]);
+        }
+
+        const plate = typeof vehiclePlate === 'string' && vehiclePlate.trim() !== ''
+            ? vehiclePlate.trim()
+            : null;
+        const ticket = parseTicketNumber(ticketNumber);
+
+        // Sin un sistema de autenticación, la placa es la identidad que usa el
+        // frontend para separar las reservas de cada usuario. Exigirla junto al
+        // ticket evita que se consulte una reserva ajena con solo adivinar el
+        // código.
+        if (ticket !== null && !plate) {
+            throw validationError([
+                { field: 'vehiclePlate', message: 'La placa es obligatoria para consultar una reserva por ticket.' }
+            ]);
+        }
+
+        const rows = await this.repository.listReservations({
+            status: status || null,
+            vehiclePlate: plate,
+            ticketNumber: ticket
+        });
         return rows.map(serializeReservation);
     }
 

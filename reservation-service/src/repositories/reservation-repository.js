@@ -1,5 +1,6 @@
 const RESERVATION_COLUMNS = `
     id,
+    ticket_number,
     space_id,
     vehicle_plate,
     status,
@@ -195,11 +196,33 @@ class ReservationRepository {
         this.pool = pool;
     }
 
-    async listReservations() {
+    async listReservations({ status = null, vehiclePlate = null, ticketNumber = null } = {}) {
+        const conditions = [];
+        const params = [];
+
+        if (status) {
+            params.push(status);
+            conditions.push(`status = $${params.length}`);
+        }
+
+        if (vehiclePlate) {
+            params.push(`${vehiclePlate.toUpperCase()}%`);
+            conditions.push(`UPPER(vehicle_plate) LIKE $${params.length}`);
+        }
+
+        if (ticketNumber !== null && ticketNumber !== undefined) {
+            params.push(ticketNumber);
+            conditions.push(`ticket_number = $${params.length}`);
+        }
+
+        const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
         const result = await this.pool.query(
             `SELECT ${RESERVATION_COLUMNS}
              FROM reservations.reservations
-             ORDER BY created_at DESC, id`
+             ${where}
+             ORDER BY created_at DESC, id`,
+            params
         );
         return result.rows;
     }

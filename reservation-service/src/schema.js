@@ -7,7 +7,8 @@ const MIGRATION_FILES = [
     '001_init.sql',
     '002_reconciliation_operations.sql',
     '003_session_ticket_number.sql',
-    '004_scheduled_reservations.sql'
+    '004_scheduled_reservations.sql',
+    '005_reservation_ticket_number.sql'
 ];
 
 async function ensureSchema() {

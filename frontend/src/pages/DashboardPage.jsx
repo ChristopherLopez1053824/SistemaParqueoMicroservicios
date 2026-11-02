@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import Alert from '../components/Alert';
 import SpaceGrid from '../components/SpaceGrid';
 import StatsPanel from '../components/StatsPanel';
@@ -38,10 +38,21 @@ export default function DashboardPage() {
     return (
         <div className="page">
             <div className="page-header">
-                <h1>Panel de plazas</h1>
+                <div>
+                    <h1>Plazas disponibles</h1>
+                    <p className="page-subtitle">
+                        Consulta las plazas, sus tipos y estados, y reserva la que necesites.
+                    </p>
+                </div>
                 <button type="button" className="btn btn-secondary" onClick={load} disabled={loading}>
                     {loading ? 'Actualizando…' : 'Actualizar'}
                 </button>
+            </div>
+
+            <div className="quick-actions">
+                <Link className="quick-action" to="/reservations">Crear una reserva</Link>
+                <Link className="quick-action" to="/sessions">Consultar mis sesiones</Link>
+                <Link className="quick-action" to="/payments">Consultar mis pagos</Link>
             </div>
 
             <Alert error={error} title="No se pudieron cargar las plazas" />

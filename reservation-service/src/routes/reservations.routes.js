@@ -12,7 +12,12 @@ function createReservationsRouter(reservationService) {
     }));
 
     router.get('/', asyncHandler(async (req, res) => {
-        const reservations = await reservationService.listReservations();
+        const { status, vehiclePlate, ticketNumber } = req.query;
+        const reservations = await reservationService.listReservations({
+            status,
+            vehiclePlate,
+            ticketNumber
+        });
         res.status(200).json({
             data: reservations,
             meta: { total: reservations.length }
