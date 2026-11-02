@@ -61,8 +61,19 @@ async function findPaymentById(paymentId) {
     return result.rows[0] || null;
 }
 
+// Puede existir más de un intento por sesión (p. ej. un intento "failed" seguido
+// de un reintento "succeeded"; ver sql/02_payments_retry_after_failure.sql). El
+// pago que representa la obligación real es el "succeeded"; sin este orden, un
+// intento fallido anterior podría devolverse en su lugar y ocultar que la sesión
+// ya está pagada.
 async function findPaymentBySession(sessionId) {
-    const result = await query('SELECT * FROM payments.payments WHERE session_id = $1', [sessionId]);
+    const result = await query(
+        `SELECT * FROM payments.payments
+         WHERE session_id = $1
+         ORDER BY (status = 'succeeded') DESC, created_at DESC
+         LIMIT 1`,
+        [sessionId]
+    );
     return result.rows[0] || null;
 }
 

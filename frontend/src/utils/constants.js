@@ -29,3 +29,11 @@ export const PAYMENT_STATUS_LABELS = {
     succeeded: 'Simulación confirmada',
     failed: 'Fallido'
 };
+
+// Etiqueta para el estado de pago de una sesión en las pantallas de
+// entrada/salida y cobro: solo interesa distinguir PAGADA de PENDIENTE,
+// sin importar si el pago no existe, está pendiente o falló.
+export const SESSION_PAYMENT_LABELS = {
+    succeeded: 'Pagada',
+    pending: 'Pendiente de pago'
+};

@@ -41,8 +41,10 @@ function createFakePaymentsStore() {
             return { rows: row ? [row] : [] };
         }
 
-        if (text.includes('FROM payments.payments WHERE session_id = $1')) {
-            const row = payments.find((p) => p.session_id === params[0]);
+        if (text.includes('FROM payments.payments') && text.includes('WHERE session_id = $1') && text.includes('ORDER BY')) {
+            const matches = payments.filter((p) => p.session_id === params[0]);
+            const succeeded = matches.find((p) => p.status === 'succeeded');
+            const row = succeeded ?? matches.slice().sort((a, b) => b.created_at - a.created_at)[0];
             return { rows: row ? [row] : [] };
         }
 
@@ -292,6 +294,35 @@ test('un intento previo fallido no bloquea un reintento legítimo con una nueva 
             return true;
         }
     );
+});
+
+test('findPaymentBySession devuelve el pago succeeded aunque haya un intento failed más reciente', async (t) => {
+    const { store, restore } = useFakeStore();
+    t.after(restore);
+
+    const quote = await createCompletedSessionQuote();
+    const { payment: succeeded } = await registerPayment({
+        sessionId: SESSION_ID,
+        quoteId: quote.quoteId,
+        idempotencyKey: 'succeeded-first-0000000000000000000'
+    });
+
+    // Intento failed registrado después, con created_at más reciente.
+    store.payments.push({
+        id: 'failed-after-0000-0000-000000000000',
+        session_id: SESSION_ID,
+        quote_id: quote.quoteId,
+        idempotency_key: 'failed-after-key-00000000000000000',
+        amount_minor: quote.amountMinor,
+        currency: 'GTQ',
+        method: 'simulated',
+        status: 'failed',
+        created_at: new Date(Date.now() + 1000)
+    });
+
+    const bySession = await findPaymentBySession(SESSION_ID);
+    assert.equal(bySession.id, succeeded.id);
+    assert.equal(bySession.status, 'succeeded');
 });
 
 test('el importe a cobrar siempre proviene de la cotización almacenada, nunca de la solicitud', async (t) => {

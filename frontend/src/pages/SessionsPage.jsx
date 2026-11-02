@@ -3,6 +3,8 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import Alert from '../components/Alert';
 import SessionCard from '../components/SessionCard';
 import SessionPicker from '../components/SessionPicker';
+import { listSpaces } from '../services/parking.service';
+import { getPaymentBySession } from '../services/payment.service';
 import { getSession, registerEntry, registerExit } from '../services/reservation.service';
 import { isUuid, shortId } from '../utils/format';
 import { getRecentSessions, rememberSession } from '../utils/storage';
@@ -14,16 +16,46 @@ export default function SessionsPage() {
     const [reservationId, setReservationId] = useState(searchParams.get('reservationId') || '');
     const [sessionId, setSessionId] = useState(searchParams.get('sessionId') || '');
     const [session, setSession] = useState(null);
+    const [spaces, setSpaces] = useState([]);
+    const [payment, setPayment] = useState(null);
+    const [paymentLoading, setPaymentLoading] = useState(false);
     const [busy, setBusy] = useState(null); // 'entry' | 'exit' | 'lookup'
     const [error, setError] = useState(null);
     const [notice, setNotice] = useState(null);
     const [recent, setRecent] = useState(getRecentSessions);
     const [manualLookup, setManualLookup] = useState(false);
 
+    useEffect(() => {
+        listSpaces().then((res) => setSpaces(res.spaces)).catch(() => {});
+    }, []);
+
+    const spaceById = Object.fromEntries(spaces.map((s) => [s.id, s]));
+
+    // El estado de pago vive en Payment Service, no en la sesión: se consulta
+    // aparte para que el administrador vea con claridad si ya fue cobrada antes
+    // de ofrecerle registrar un nuevo cobro.
+    async function loadPaymentStatus(sess) {
+        if (sess?.status !== 'completed') {
+            setPayment(null);
+            return;
+        }
+        const id = sess.sessionId ?? sess.id;
+        setPaymentLoading(true);
+        try {
+            setPayment(await getPaymentBySession(id));
+        } catch {
+            // Sin pago registrado (404) u otro error de consulta: se trata como pendiente.
+            setPayment(null);
+        } finally {
+            setPaymentLoading(false);
+        }
+    }
+
     async function showSession(id) {
         const data = await getSession(id);
         setSession(data);
         setSessionId(id);
+        await loadPaymentStatus(data);
         return data;
     }
 
@@ -68,6 +100,7 @@ export default function SessionsPage() {
             if (result.entryAt && result.status) {
                 setSession({ ...result, sessionId: newSessionId });
                 setSessionId(newSessionId);
+                setPayment(null);
             } else {
                 await showSession(newSessionId);
             }
@@ -100,6 +133,7 @@ export default function SessionsPage() {
             try {
                 const result = await registerExit(id);
                 setSession(result);
+                setPayment(null);
                 setNotice('Salida registrada. Ya puede calcular el importe.');
             } catch (err) {
                 // Una petición fallida no garantiza que la salida no se haya registrado:
@@ -205,13 +239,30 @@ export default function SessionsPage() {
 
                 <div>
                     {session ? (
-                        <SessionCard session={session}>
+                        <SessionCard
+                            session={session}
+                            space={spaceById[session.spaceId]}
+                            payment={payment}
+                            paymentLoading={paymentLoading}
+                        >
                             {session.status === 'active' && (
                                 <button type="button" className="btn btn-danger" onClick={handleExit} disabled={busy !== null}>
                                     {busy === 'exit' ? 'Registrando salida…' : 'Registrar salida'}
                                 </button>
                             )}
-                            {session.status === 'completed' && (
+                            {session.status === 'completed' && payment?.status === 'succeeded' && (
+                                <>
+                                    <p className="field-error">Esta sesión ya fue pagada. No es posible registrar otro cobro.</p>
+                                    <button
+                                        type="button"
+                                        className="btn btn-secondary"
+                                        onClick={() => navigate(`/payments?sessionId=${currentId}`)}
+                                    >
+                                        Ver comprobante de pago
+                                    </button>
+                                </>
+                            )}
+                            {session.status === 'completed' && payment?.status !== 'succeeded' && !paymentLoading && (
                                 <button
                                     type="button"
                                     className="btn btn-primary"

@@ -54,9 +54,27 @@ export default function PaymentsPage() {
         return id;
     }
 
+    // Devuelve el pago existente de la sesión, o null si todavía no tiene ninguno.
+    async function fetchExistingPayment(id) {
+        try {
+            return await getPaymentBySession(id);
+        } catch (err) {
+            if (err.code === 'RESOURCE_NOT_FOUND') return null;
+            throw err;
+        }
+    }
+
     function requestQuote(id) {
         run('quote', async () => {
             setPayment(null);
+            setQuote(null);
+            // Si la sesión ya tiene un pago confirmado, se muestra directamente:
+            // no se genera una cotización nueva ni se permite un segundo cobro.
+            const existing = await fetchExistingPayment(id);
+            if (existing?.status === 'succeeded') {
+                setPayment(existing);
+                return;
+            }
             const data = await createQuote(id);
             setQuote(data);
             setNow(Date.now());
@@ -231,7 +249,11 @@ export default function PaymentsPage() {
                                 <dd><code className="small muted">{payment.paymentId ?? payment.id}</code></dd>
                             </dl>
                             {payment.status === 'succeeded' && (
-                                <Alert type="success">Pago simulado confirmado. No se transfirió dinero real.</Alert>
+                                <Alert type="success">
+                                    {quote
+                                        ? 'Pago simulado confirmado. No se transfirió dinero real.'
+                                        : 'Esta sesión ya fue pagada anteriormente. No es posible registrar un nuevo cobro.'}
+                                </Alert>
                             )}
                         </div>
                     )}
